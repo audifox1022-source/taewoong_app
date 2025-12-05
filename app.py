@@ -1,13 +1,34 @@
 import streamlit as st
-import google.generativeai as genai
-from PIL import Image
 import os
-import time
+import sys
+import subprocess
+
+# --- [비상 조치] 강제 라이브러리 업데이트 ---
+# requirements.txt가 작동 안 할 때를 대비해 코드에서 강제로 설치합니다.
+try:
+    import google.generativeai as genai
+    # 버전이 너무 낮으면 강제 업데이트 시도
+    version = genai.__version__
+    if version < "0.8.3":
+        st.warning(f"⚠️ 구버전 감지됨 ({version}). 최신 버전으로 강제 업데이트 중...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "google-generativeai>=0.8.3"])
+        import google.generativeai as genai
+        st.success("✅ 업데이트 완료! 앱을 다시 실행합니다.")
+        st.stop() # 업데이트 후 리로드 유도
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "google-generativeai>=0.8.3"])
+    import google.generativeai as genai
+
+from PIL import Image
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="태웅 표준 견적 시스템", layout="wide")
 
 st.title("🏭 태웅(TAEWOONG) AI 표준 견적 & 중량 산출기")
+
+# [진단용] 현재 라이브러리 버전 표시 (작게)
+st.caption(f"System Status: google-generativeai v{genai.__version__}")
+
 st.markdown("""
 **[사용 방법]**
 1. **[제품 도면]** (이미지 또는 PDF)을 업로드하세요.
@@ -27,116 +48,106 @@ with st.sidebar:
     standard_path = "standard.pdf" 
     st.divider()
     if os.path.exists(standard_path):
-        st.success("✅ 표준서(standard.pdf) 로드 완료")
+        st.success("✅ 표준서 로드 완료")
     else:
-        st.error("❌ 표준서 파일이 없습니다!")
-        st.info("GitHub 저장소에 'standard.pdf' 파일을 업로드해주세요.")
+        st.error("❌ 표준서 파일 없음!")
+        st.info("GitHub에 'standard.pdf'를 올려주세요.")
 
-# --- 3. [핵심] 모델 자동 찾기 함수 ---
+# --- 3. [핵심] 작동하는 모델 찾기 ---
 def get_working_model():
-    # 시도할 모델 목록 (우선순위 순서대로)
-    candidate_models = [
+    # 사용 가능한 모델을 순서대로 테스트
+    candidates = [
         'gemini-1.5-flash',
         'gemini-1.5-flash-latest',
-        'gemini-1.5-flash-001',
         'gemini-1.5-pro',
-        'gemini-1.5-pro-latest',
-        'gemini-pro' # 최후의 수단
+        'gemini-pro' # 최후의 수단 (구형)
     ]
     
-    for model_name in candidate_models:
+    # API 키 설정 확인
+    try:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+        genai.configure(api_key=api_key)
+    except:
+        return None, "API Key Error"
+
+    # 모델 찾기
+    for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
             return model, model_name
         except:
             continue
-    return None, None
+    
+    return None, "No Model Found"
 
 # --- 4. AI 분석 로직 ---
 def analyze_drawing_with_standard(drawing_blob):
-    try:
-        api_key = st.secrets["GOOGLE_API_KEY"]
-        genai.configure(api_key=api_key)
-    except:
-        st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
-        return "Error"
+    model, model_name = get_working_model()
+    
+    if not model:
+        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다. ({model_name})"
 
-    # 내장된 표준서 파일 읽기
+    # 내장된 표준서 읽기
     try:
         with open("standard.pdf", "rb") as f:
             standard_data = f.read()
         standard_blob = {"mime_type": "application/pdf", "data": standard_data}
     except FileNotFoundError:
-        return "Error: GitHub에 standard.pdf 파일이 없습니다."
+        return "Error: standard.pdf 파일이 없습니다."
 
-    # [수정됨] 작동하는 모델 찾기
-    model, used_model_name = get_working_model()
-    if model is None:
-        return "Error: 사용 가능한 AI 모델을 찾을 수 없습니다. (API Key 권한 등을 확인하세요)"
-
-    prompt = """
+    prompt = f"""
     당신은 (주)태웅의 **'단조 견적 및 중량 산출 전문가'**입니다.
-    시스템에 내장된 **[PE-WS-1606-001 가공여유표준]**을 법전처럼 준수하여, 사용자가 업로드한 **[도면 파일]**의 단조 스펙을 산출하십시오.
+    시스템에 내장된 **[PE-WS-1606-001 가공여유표준]**을 준수하여, 사용자가 업로드한 **[도면 파일]**의 단조 스펙을 산출하십시오.
 
     [작업 프로세스]
     1. **형상 분류:** 도면을 보고 제품 형상(Ring, Shaft, Tube Sheet, Disc 등)을 판단하십시오.
-    2. **표준 매핑:** 내장된 표준서 PDF에서 해당 형상의 페이지를 찾아, 치수(OD, T 등)에 맞는 **가공 여유**를 찾으십시오.
-       - *반드시 "표준서 00페이지 표를 참조함"이라고 근거를 대야 합니다.*
-    3. **치수 및 중량 계산 (비중 7.85 적용):**
-       - **도면 중량:** 정삭(Final) 치수 부피 x 7.85 / 1,000
-       - **단조(소재) 치수:** 정삭 치수 + (여유값 x 2, 양측 기준)
-       - **단조 중량:** 단조(Raw) 치수 부피 x 7.85 / 1,000
+    2. **표준 매핑:** 내장된 표준서 PDF에서 해당 형상의 페이지를 찾아 **가공 여유**를 찾으십시오.
+       - *근거 필수: "표준서 00페이지 표를 참조함"*
+    3. **치수 및 중량 계산 (비중 7.85):**
+       - **도면 중량:** 정삭 치수 부피 x 7.85 / 1,000
+       - **단조 치수:** 정삭 치수 + (여유값 x 2)
+       - **단조 중량:** 단조 치수 부피 x 7.85 / 1,000
 
     [출력 원칙]
-    - **언어:** 자연스러운 한국어로 작성.
-    - **숫자:** 천 단위 콤마(,) 표기 필수.
+    - 언어: 한국어
+    - 숫자: 천 단위 콤마(,) 표기
 
     [출력 포맷]
-    결과는 아래 마크다운 표 형식으로 작성하십시오.
-
     | 구분 | 항목 | 내용 | 비고/근거 |
     |---|---|---|---|
     | **1. 기본 정보** | 제품 형상 | (예: TUBE SHEET) | 표준서 참조 |
-    | | 정삭(도면) 치수 | OD: 000, ID: 000, T: 000 (mm) | 도면 판독 |
-    | | **도면 중량** | **0,000 kg** | 이론 중량 계산 |
-    | **2. 여유 적용** | 적용 기준 | **편측 +00mm (Total +00mm)** | **표준서 Pg.00 [표 번호]**<br>구간: 00~00 적용 |
-    | **3. 단조 스펙** | 단조(소재) 치수 | OD: 000, ID: 000, T: 000 (mm) | 정삭 + 여유 |
+    | | 정삭(도면) 치수 | OD: 000, T: 000 (mm) | 도면 판독 |
+    | | **도면 중량** | **0,000 kg** | 이론 계산 |
+    | **2. 여유 적용** | 적용 기준 | **Total +00mm** | **표준서 Pg.00 [표 번호]** |
+    | **3. 단조 스펙** | 단조(소재) 치수 | OD: 000, T: 000 (mm) | 정삭 + 여유 |
     | | **단조 중량** | **0,000 kg** | 소재 중량 계산 |
 
     **[종합 의견]**
-    - 특이사항(SUS 재질 추가 여유 등)이 있다면 한글로 명시해주세요.
+    - 특이사항이나 협의 사항이 있다면 명시.
     """
     
-    with st.spinner(f"AI({used_model_name})가 분석 중입니다..."):
-        # 모델별 자동 재시도 로직
+    with st.spinner(f"AI({model_name})가 분석 중입니다..."):
         try:
             response = model.generate_content([prompt, drawing_blob, standard_blob])
             return response.text
         except Exception as e:
-            # 현재 모델이 실패하면 즉시 다른 안정적인 모델(Pro)로 한 번 더 시도
-            try:
-                fallback_model = genai.GenerativeModel('gemini-1.5-pro')
-                response = fallback_model.generate_content([prompt, drawing_blob, standard_blob])
-                return response.text + "\n\n*(Note: Fallback to 1.5 Pro)*"
-            except Exception as e2:
-                return f"Error: {str(e)} / Retry Error: {str(e2)}"
+            return f"Error: {str(e)}"
 
-# --- 5. 메인 실행 화면 ---
+# --- 5. 메인 실행 ---
 if st.button("🚀 표준 견적 산출 시작", use_container_width=True):
     if not drawing_file:
-        st.error("⚠️ 제품 도면 파일을 업로드해주세요.")
+        st.error("⚠️ 도면 파일을 업로드해주세요.")
     elif not os.path.exists("standard.pdf"):
-        st.error("⚠️ 시스템 오류: standard.pdf 파일 없음.")
+        st.error("⚠️ GitHub에 standard.pdf가 없습니다.")
     else:
         try:
             col1, col2 = st.columns([1, 1.5])
             with col1:
-                st.subheader("📄 업로드된 도면")
+                st.subheader("📄 도면 미리보기")
                 if drawing_file.type.startswith('image'):
-                    img = Image.open(drawing_file)
-                    st.image(img, use_container_width=True)
-                elif drawing_file.type == 'application/pdf':
-                    st.info(f"📂 PDF 도면: {drawing_file.name}")
+                    st.image(drawing_file, use_container_width=True)
+                else:
+                    st.info(f"PDF 파일: {drawing_file.name}")
             
             drawing_blob = {"mime_type": drawing_file.type, "data": drawing_file.getvalue()}
             
@@ -149,4 +160,4 @@ if st.button("🚀 표준 견적 산출 시작", use_container_width=True):
                 else:
                     st.error(f"분석 실패: {result_text}")
         except Exception as e:
-            st.error(f"시스템 오류: {e}")
+            st.error(f"오류: {e}")
