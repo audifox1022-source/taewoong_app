@@ -44,12 +44,14 @@ def analyze_drawing_with_standard(drawing_blob):
         st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
         return "Error"
 
-    # [수정됨] 모델 버전을 최신 버전(latest)으로 명시하여 404 오류 방지
+    # [수정됨] 가장 표준적인 모델명 사용 + 실패 시 구형 모델로 자동 전환
+    model_name = 'gemini-1.5-flash'
+    
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel(model_name)
     except:
-        # 만약 latest도 안되면 기본 flash 시도
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 만약 1.5 Flash가 안 되면 구형 Pro 모델 시도
+        model = genai.GenerativeModel('gemini-pro')
 
     # 내장된 표준서 파일 읽기
     try:
@@ -98,7 +100,8 @@ def analyze_drawing_with_standard(drawing_blob):
             response = model.generate_content([prompt, drawing_blob, standard_blob])
             return response.text
         except Exception as e:
-            return f"Error: {str(e)}"
+            # 상세한 에러 메시지 출력
+            return f"Error ({model_name}): {str(e)}"
 
 # --- 4. 메인 실행 화면 ---
 if st.button("🚀 표준 견적 산출 시작", use_container_width=True):
