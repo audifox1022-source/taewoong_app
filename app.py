@@ -14,7 +14,7 @@ st.markdown("""
    *(가공여유표준서는 시스템에 내장되어 있어 자동 적용됩니다)*
 """)
 
-# --- 2. 사이드바 (도면 업로드만 남김) ---
+# --- 2. 사이드바 ---
 with st.sidebar:
     st.header("📂 도면 업로드")
     
@@ -25,8 +25,7 @@ with st.sidebar:
         help="캐드 파일은 PDF로 변환해서 올려주세요."
     )
     
-    # [상태 표시] 표준 문서 로드 확인
-    # GitHub에 'standard.pdf'라는 이름으로 파일을 올려두셔야 합니다.
+    # 표준 문서 로드 확인
     standard_path = "standard.pdf" 
     
     st.divider()
@@ -45,8 +44,8 @@ def analyze_drawing_with_standard(drawing_blob):
         st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
         return "Error"
 
-    # [수정됨] 오류가 나는 3.0 대신, 가장 강력하고 안정적인 1.5 Pro 모델 사용
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    # [수정됨] 가장 안정적이고 빠른 Flash 모델 사용 (오류 해결)
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
     # 내장된 표준서 파일 읽기
     try:
@@ -90,7 +89,7 @@ def analyze_drawing_with_standard(drawing_blob):
     - 표준서의 '협의 사항'이나 특이사항이 있다면 한글로 명확히 명시해주세요.
     """
     
-    with st.spinner("AI가 내장된 표준서를 검토하고 도면을 분석 중입니다... (약 15초 소요)"):
+    with st.spinner("AI가 내장된 표준서를 검토하고 도면을 분석 중입니다... (약 10초 소요)"):
         try:
             response = model.generate_content([prompt, drawing_blob, standard_blob])
             return response.text
