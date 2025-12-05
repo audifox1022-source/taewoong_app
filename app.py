@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import os
+import time
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="태웅 표준 견적 시스템", layout="wide")
@@ -17,17 +18,13 @@ st.markdown("""
 # --- 2. 사이드바 ---
 with st.sidebar:
     st.header("📂 도면 업로드")
-    
-    # 도면 파일
     drawing_file = st.file_uploader(
         "1️⃣ 제품 도면 (JPG/PNG/PDF)", 
         type=["jpg", "jpeg", "png", "pdf"],
         help="캐드 파일은 PDF로 변환해서 올려주세요."
     )
     
-    # 표준 문서 로드 확인
     standard_path = "standard.pdf" 
-    
     st.divider()
     if os.path.exists(standard_path):
         st.success("✅ 표준서(standard.pdf) 로드 완료")
@@ -35,7 +32,27 @@ with st.sidebar:
         st.error("❌ 표준서 파일이 없습니다!")
         st.info("GitHub 저장소에 'standard.pdf' 파일을 업로드해주세요.")
 
-# --- 3. AI 분석 로직 ---
+# --- 3. [핵심] 모델 자동 찾기 함수 ---
+def get_working_model():
+    # 시도할 모델 목록 (우선순위 순서대로)
+    candidate_models = [
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-flash-001',
+        'gemini-1.5-pro',
+        'gemini-1.5-pro-latest',
+        'gemini-pro' # 최후의 수단
+    ]
+    
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            return model, model_name
+        except:
+            continue
+    return None, None
+
+# --- 4. AI 분석 로직 ---
 def analyze_drawing_with_standard(drawing_blob):
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
@@ -44,15 +61,6 @@ def analyze_drawing_with_standard(drawing_blob):
         st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
         return "Error"
 
-    # [수정됨] 가장 표준적인 모델명 사용 + 실패 시 구형 모델로 자동 전환
-    model_name = 'gemini-1.5-flash'
-    
-    try:
-        model = genai.GenerativeModel(model_name)
-    except:
-        # 만약 1.5 Flash가 안 되면 구형 Pro 모델 시도
-        model = genai.GenerativeModel('gemini-pro')
-
     # 내장된 표준서 파일 읽기
     try:
         with open("standard.pdf", "rb") as f:
@@ -60,6 +68,11 @@ def analyze_drawing_with_standard(drawing_blob):
         standard_blob = {"mime_type": "application/pdf", "data": standard_data}
     except FileNotFoundError:
         return "Error: GitHub에 standard.pdf 파일이 없습니다."
+
+    # [수정됨] 작동하는 모델 찾기
+    model, used_model_name = get_working_model()
+    if model is None:
+        return "Error: 사용 가능한 AI 모델을 찾을 수 없습니다. (API Key 권한 등을 확인하세요)"
 
     prompt = """
     당신은 (주)태웅의 **'단조 견적 및 중량 산출 전문가'**입니다.
@@ -72,7 +85,6 @@ def analyze_drawing_with_standard(drawing_blob):
     3. **치수 및 중량 계산 (비중 7.85 적용):**
        - **도면 중량:** 정삭(Final) 치수 부피 x 7.85 / 1,000
        - **단조(소재) 치수:** 정삭 치수 + (여유값 x 2, 양측 기준)
-         *길이(L)나 두께(T) 방향 여유가 다르면 각각 적용.*
        - **단조 중량:** 단조(Raw) 치수 부피 x 7.85 / 1,000
 
     [출력 원칙]
@@ -92,50 +104,49 @@ def analyze_drawing_with_standard(drawing_blob):
     | | **단조 중량** | **0,000 kg** | 소재 중량 계산 |
 
     **[종합 의견]**
-    - 표준서의 '협의 사항'이나 특이사항이 있다면 한글로 명확히 명시해주세요.
+    - 특이사항(SUS 재질 추가 여유 등)이 있다면 한글로 명시해주세요.
     """
     
-    with st.spinner("AI가 내장된 표준서를 검토하고 도면을 분석 중입니다... (약 10초 소요)"):
+    with st.spinner(f"AI({used_model_name})가 분석 중입니다..."):
+        # 모델별 자동 재시도 로직
         try:
             response = model.generate_content([prompt, drawing_blob, standard_blob])
             return response.text
         except Exception as e:
-            # 상세한 에러 메시지 출력
-            return f"Error ({model_name}): {str(e)}"
+            # 현재 모델이 실패하면 즉시 다른 안정적인 모델(Pro)로 한 번 더 시도
+            try:
+                fallback_model = genai.GenerativeModel('gemini-1.5-pro')
+                response = fallback_model.generate_content([prompt, drawing_blob, standard_blob])
+                return response.text + "\n\n*(Note: Fallback to 1.5 Pro)*"
+            except Exception as e2:
+                return f"Error: {str(e)} / Retry Error: {str(e2)}"
 
-# --- 4. 메인 실행 화면 ---
+# --- 5. 메인 실행 화면 ---
 if st.button("🚀 표준 견적 산출 시작", use_container_width=True):
     if not drawing_file:
         st.error("⚠️ 제품 도면 파일을 업로드해주세요.")
     elif not os.path.exists("standard.pdf"):
-        st.error("⚠️ 시스템 오류: GitHub에 'standard.pdf' 파일이 없습니다. 관리자에게 문의하세요.")
+        st.error("⚠️ 시스템 오류: standard.pdf 파일 없음.")
     else:
         try:
-            # 화면 분할
             col1, col2 = st.columns([1, 1.5])
-            
-            # 왼쪽: 도면 미리보기
             with col1:
                 st.subheader("📄 업로드된 도면")
                 if drawing_file.type.startswith('image'):
                     img = Image.open(drawing_file)
                     st.image(img, use_container_width=True)
                 elif drawing_file.type == 'application/pdf':
-                    st.info(f"📂 PDF 도면 파일이 업로드되었습니다:\n{drawing_file.name}")
-                    st.markdown("*(PDF 도면 내용은 AI가 직접 열람하여 분석합니다)*")
+                    st.info(f"📂 PDF 도면: {drawing_file.name}")
             
-            # 데이터 준비
             drawing_blob = {"mime_type": drawing_file.type, "data": drawing_file.getvalue()}
             
-            # 오른쪽: 분석 결과
             with col2:
                 result_text = analyze_drawing_with_standard(drawing_blob)
                 if "Error" not in result_text:
-                    st.subheader("📋 AI 표준 견적 분석 결과")
+                    st.subheader("📋 분석 결과")
                     st.markdown(result_text)
                     st.success("분석 완료!")
                 else:
                     st.error(f"분석 실패: {result_text}")
-                
         except Exception as e:
-            st.error(f"시스템 오류가 발생했습니다: {e}")
+            st.error(f"시스템 오류: {e}")
