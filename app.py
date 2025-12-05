@@ -1,50 +1,75 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
+import os
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="태웅 표준 견적 시스템", layout="wide")
 
 st.title("🏭 태웅(TAEWOONG) AI 표준 견적 & 중량 산출기")
 st.markdown("""
-**[사용 가이드]**
-1. 왼쪽 사이드바에 **Google API Key**를 입력하세요.
-2. **[제품 도면]** (이미지 또는 PDF)과 **[가공여유표준 PDF]**를 업로드하세요.
-3. AI가 표준서를 기준으로 도면을 분석하여 **[도면 vs 단조]** 스펙을 한글로 산출합니다.
+**[사용 방법]**
+1. **[제품 도면]** (이미지 또는 PDF)을 업로드하세요.
+2. **'견적 산출 시작'** 버튼을 누르세요.
+   *(가공여유표준서는 시스템에 내장되어 있어 자동 적용됩니다)*
 """)
 
-# --- 2. 사이드바 (설정 및 파일 업로드) ---
+# --- 2. 사이드바 (도면 업로드만 남김) ---
 with st.sidebar:
-    st.header("⚙️ 시스템 설정")
+    st.header("📂 도면 업로드")
     
-    # API 키 입력
-    api_key = st.text_input("🔑 Google API Key", type="password")
-    
-    st.divider()
-    st.subheader("📂 파일 업로드")
-    
-    # 1. 도면 파일 (PDF 포함)
+    # 도면 파일
     drawing_file = st.file_uploader(
         "1️⃣ 제품 도면 (JPG/PNG/PDF)", 
         type=["jpg", "jpeg", "png", "pdf"],
         help="캐드 파일은 PDF로 변환해서 올려주세요."
     )
     
-    # 2. 표준 문서 (PDF)
-    standard_file = st.file_uploader("2️⃣ 가공여유표준서 (PDF)", type=["pdf"])
+    # [상태 표시] 표준 문서 로드 확인
+    # GitHub에 'standard.pdf'라는 이름으로 파일을 올려두셔야 합니다.
+    standard_path = "standard.pdf" 
+    
+    st.divider()
+    if os.path.exists(standard_path):
+        st.success("✅ 표준서(standard.pdf) 로드 완료")
+    else:
+        st.error("❌ 표준서 파일이 없습니다!")
+        st.info("GitHub 저장소에 'standard.pdf' 파일을 업로드해주세요.")
 
 # --- 3. AI 분석 로직 ---
-def analyze_drawing_with_standard(drawing_blob, standard_blob):
-    model = genai.GenerativeModel('gemini-1.5-pro')
+def analyze_drawing_with_standard(drawing_blob):
+    try:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+        genai.configure(api_key=api_key)
+    except:
+        st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
+        return "Error"
+
+    # [핵심] 모델 설정 (요청하신 3.0 Pro Preview 적용 시도)
+    # 만약 3.0이 아직 배포 전이라 에러가 나면, 자동으로 1.5 Pro를 사용합니다.
+    target_model = 'gemini-3.0-pro-preview' 
+    fallback_model = 'gemini-1.5-pro'
     
-    # [수정됨] 한글 출력 강화를 위한 프롬프트
+    try:
+        model = genai.GenerativeModel(target_model)
+    except:
+        model = genai.GenerativeModel(fallback_model)
+
+    # 내장된 표준서 파일 읽기
+    try:
+        with open("standard.pdf", "rb") as f:
+            standard_data = f.read()
+        standard_blob = {"mime_type": "application/pdf", "data": standard_data}
+    except FileNotFoundError:
+        return "Error: GitHub에 standard.pdf 파일이 없습니다."
+
     prompt = """
     당신은 (주)태웅의 **'단조 견적 및 중량 산출 전문가'**입니다.
-    시스템에 탑재된 **[PE-WS-1606-001 가공여유표준]**을 법전처럼 준수하여, 사용자가 업로드한 **[도면 파일]**의 단조 스펙을 산출하십시오.
+    시스템에 내장된 **[PE-WS-1606-001 가공여유표준]**을 법전처럼 준수하여, 사용자가 업로드한 **[도면 파일]**의 단조 스펙을 산출하십시오.
 
     [작업 프로세스]
     1. **형상 분류:** 도면을 보고 제품 형상(Ring, Shaft, Tube Sheet, Disc 등)을 판단하십시오.
-    2. **표준 매핑:** 탑재된 표준서 PDF에서 해당 형상의 페이지를 찾아, 치수(OD, T 등)에 맞는 **가공 여유**를 찾으십시오.
+    2. **표준 매핑:** 내장된 표준서 PDF에서 해당 형상의 페이지를 찾아, 치수(OD, T 등)에 맞는 **가공 여유**를 찾으십시오.
        - *반드시 "표준서 00페이지 표를 참조함"이라고 근거를 대야 합니다.*
     3. **치수 및 중량 계산 (비중 7.85 적용):**
        - **도면 중량:** 정삭(Final) 치수 부피 x 7.85 / 1,000
@@ -53,9 +78,8 @@ def analyze_drawing_with_standard(drawing_blob, standard_blob):
        - **단조 중량:** 단조(Raw) 치수 부피 x 7.85 / 1,000
 
     [출력 원칙]
-    - **언어:** 모든 설명, 비고, 근거, 종합 의견은 **반드시 자연스러운 한국어**로 작성하십시오.
-    - **용어:** OD(외경), ID(내경), T(두께), L(길이) 등의 약어는 업계 표준이므로 사용하되, 필요시 한글 명칭을 괄호에 병기하십시오.
-    - **숫자:** 천 단위 콤마(,)를 반드시 표기하십시오. (예: 12,345)
+    - **언어:** 자연스러운 한국어로 작성.
+    - **숫자:** 천 단위 콤마(,) 표기 필수.
 
     [출력 포맷]
     결과는 아래 마크다운 표 형식으로 작성하십시오.
@@ -70,26 +94,32 @@ def analyze_drawing_with_standard(drawing_blob, standard_blob):
     | | **단조 중량** | **0,000 kg** | 소재 중량 계산 |
 
     **[종합 의견]**
-    - 이 견적의 특이사항이나 표준서의 '협의 사항(Remarks)'에 해당하는 내용이 있다면 **한글로** 명확히 명시해주세요.
-    - 재질에 따른 추가 여유(예: SUS +5mm 등)가 적용되었는지 여부도 설명해주세요.
+    - 표준서의 '협의 사항'이나 특이사항이 있다면 한글로 명확히 명시해주세요.
     """
     
-    with st.spinner("AI가 표준서를 펼쳐보고, 도면을 분석 중입니다... (약 20초 소요)"):
-        response = model.generate_content([prompt, drawing_blob, standard_blob])
-        return response.text
+    with st.spinner(f"AI({model.model_name})가 내장된 표준서를 검토하고 도면을 분석 중입니다..."):
+        try:
+            response = model.generate_content([prompt, drawing_blob, standard_blob])
+            return response.text
+        except Exception as e:
+            # 모델 에러 발생 시(3.0 없음 등), 1.5 Pro로 재시도
+            if model.model_name == target_model:
+                try:
+                    fallback = genai.GenerativeModel(fallback_model)
+                    response = fallback.generate_content([prompt, drawing_blob, standard_blob])
+                    return response.text + "\n\n*(참고: 3.0 모델 연결 실패로 1.5 Pro로 분석했습니다)*"
+                except Exception as e2:
+                    return f"Error: {str(e2)}"
+            return f"Error: {str(e)}"
 
 # --- 4. 메인 실행 화면 ---
 if st.button("🚀 표준 견적 산출 시작", use_container_width=True):
-    if not api_key:
-        st.error("⚠️ 왼쪽 사이드바에 Google API Key를 입력해주세요.")
-    elif not drawing_file:
+    if not drawing_file:
         st.error("⚠️ 제품 도면 파일을 업로드해주세요.")
-    elif not standard_file:
-        st.error("⚠️ 가공여유표준서(PDF) 파일을 업로드해주세요.")
+    elif not os.path.exists("standard.pdf"):
+        st.error("⚠️ 시스템 오류: GitHub에 'standard.pdf' 파일이 없습니다. 관리자에게 문의하세요.")
     else:
         try:
-            genai.configure(api_key=api_key)
-            
             # 화면 분할
             col1, col2 = st.columns([1, 1.5])
             
@@ -105,14 +135,16 @@ if st.button("🚀 표준 견적 산출 시작", use_container_width=True):
             
             # 데이터 준비
             drawing_blob = {"mime_type": drawing_file.type, "data": drawing_file.getvalue()}
-            standard_blob = {"mime_type": standard_file.type, "data": standard_file.getvalue()}
             
             # 오른쪽: 분석 결과
             with col2:
-                result_text = analyze_drawing_with_standard(drawing_blob, standard_blob)
-                st.subheader("📋 AI 표준 견적 분석 결과")
-                st.markdown(result_text)
-                st.success("분석 완료! 내용을 확인해주세요.")
+                result_text = analyze_drawing_with_standard(drawing_blob)
+                if "Error" not in result_text:
+                    st.subheader("📋 AI 표준 견적 분석 결과")
+                    st.markdown(result_text)
+                    st.success("분석 완료!")
+                else:
+                    st.error(f"분석 실패: {result_text}")
                 
         except Exception as e:
-            st.error(f"분석 중 오류가 발생했습니다: {e}")
+            st.error(f"시스템 오류가 발생했습니다: {e}")
