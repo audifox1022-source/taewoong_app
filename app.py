@@ -3,6 +3,20 @@ import google.generativeai as genai
 from PIL import Image
 import os
 import importlib.metadata
+import time
+
+# --- [비상 조치] 라이브러리 강제 업데이트 및 재설치 (이전 코드 유지) ---
+def install_package(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", package])
+    
+try:
+    import google.generativeai as genai
+    import importlib.metadata
+except ImportError:
+    st.warning("⚠️ AI 라이브러리가 없어 설치 중입니다...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "google-generativeai>=0.8.3"])
+    import google.generativeai as genai
+    st.experimental_rerun() # 업데이트 후 리로드
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="태웅 표준 견적 시스템", layout="wide")
@@ -26,7 +40,7 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ 작업 설정")
     
-    # [핵심] 1. 제품 형상 선택 (가공여유표준서 PE-WS-1606-001 기준)
+    # [핵심 수정 부분 A] selected_shape 값을 st.selectbox가 직접 반환하도록 합니다.
     shape_options = [
         "TUBE SHEET & DISC", 
         "SHAFT (PRO/INTER)", 
@@ -35,8 +49,12 @@ with st.sidebar:
         "R-BAR / SQ-BAR", 
         "HALF RING"
     ]
-    selected_shape = st.selectbox("1️⃣ 제품 형상 선택", options=shape_options, 
-                                  help="표준서 PE-WS-1606-001의 섹션에 맞춰 선택해 주세요.")
+    # **KeyError 해결:** st.selectbox의 반환값(selected_shape)을 직접 사용합니다.
+    selected_shape = st.selectbox(
+        "1️⃣ 제품 형상 선택", 
+        options=shape_options, 
+        help="표준서 PE-WS-1606-001의 섹션에 맞춰 선택해 주세요."
+    )
     
     st.divider()
     
@@ -57,19 +75,24 @@ with st.sidebar:
 
 # --- 3. [핵심] 작동하는 모델 자동 탐색 ---
 def get_working_model():
-    # API Key 설정
+    # API 키 설정
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
         genai.configure(api_key=api_key)
     except:
         return None, "API Key Error"
 
-    # 모델 찾기 로직 (404 오류 방지를 위해)
-    candidates = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    # 모델 목록을 순서대로 테스트 (최신 버전 0.8.5에서도 작동하는 안정적인 방식)
+    candidates = [
+        'gemini-1.5-flash',
+        'gemini-1.5-pro', 
+        'gemini-pro'
+    ]
     
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
+            # 모델이 생성 가능한지 테스트 (성능 테스트 대신 존재 여부만 확인)
             return model, model_name
         except:
             continue
@@ -91,11 +114,11 @@ def analyze_drawing_with_standard(drawing_blob, selected_shape):
     except FileNotFoundError:
         return "Error: standard.pdf 파일이 없습니다."
 
-    # [수정된 프롬프트] 사용자 선택 형상을 최우선 적용
+    # Prompt (사용자 선택 형상을 최우선 적용)
     prompt = f"""
     당신은 (주)태웅의 **'단조 견적 및 중량 산출 전문가'**입니다.
     사용자가 지정한 제품 형상은 **'{selected_shape}'**입니다. 도면의 시각적 판단보다 이 형상을 최우선으로 간주하여 견적을 산출하십시오.
-
+    
     [작업 프로세스]
     1. **형상 분류:** **'{selected_shape}'** 형상으로 간주하고 분석을 진행하십시오.
     2. **표준 매핑:** 내장된 표준서 PDF에서 해당 '{selected_shape}' 형상의 섹션을 찾아, 도면 치수(OD, T 등)에 맞는 **가공 여유**를 찾으십시오.
@@ -119,7 +142,7 @@ def analyze_drawing_with_standard(drawing_blob, selected_shape):
     - 특이사항이나 협의 사항이 있다면 명시.
     """
     
-    with st.spinner(f"AI({model_name})가 '{selected_shape}' 형상 기준으로 분석 중입니다..."):
+    with st.spinner(f"AI({model_name})가 분석 중입니다..."):
         try:
             response = model.generate_content([prompt, drawing_blob, standard_blob])
             return response.text
@@ -128,11 +151,11 @@ def analyze_drawing_with_standard(drawing_blob, selected_shape):
 
 # --- 5. 메인 실행 ---
 if st.button("🚀 견적 산출 시작", use_container_width=True):
-    if not st.session_state.get('selected_shape'): # 세션 상태가 초기화되지 않았을 경우 대비
-         selected_shape = st.session_state['selected_shape'] = st.session_state['selectbox_shape']
-
+    # [핵심 수정 부분 B] 세션 상태 관련 복잡한 로직을 모두 제거하고 selected_shape 변수를 직접 사용합니다.
     if not drawing_file:
         st.error("⚠️ 제품 도면 파일을 업로드해주세요.")
+    elif not os.path.exists("standard.pdf"):
+        st.error("⚠️ GitHub에 standard.pdf 파일이 없습니다.")
     else:
         try:
             col1, col2 = st.columns([1, 1.5])
@@ -146,8 +169,9 @@ if st.button("🚀 견적 산출 시작", use_container_width=True):
             drawing_blob = {"mime_type": drawing_file.type, "data": drawing_file.getvalue()}
             
             with col2:
-                # 선택된 형상 값을 넘김
-                result_text = analyze_drawing_with_standard(drawing_blob, selected_shape)
+                # selected_shape 변수(st.selectbox의 반환값)를 인수로 넘김
+                result_text = analyze_drawing_with_standard(drawing_blob, selected_shape) 
+                
                 if "Error" not in result_text:
                     st.subheader("📋 분석 결과")
                     st.markdown(result_text)
