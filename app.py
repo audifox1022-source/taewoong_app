@@ -45,15 +45,8 @@ def analyze_drawing_with_standard(drawing_blob):
         st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
         return "Error"
 
-    # [핵심] 모델 설정 (요청하신 3.0 Pro Preview 적용 시도)
-    # 만약 3.0이 아직 배포 전이라 에러가 나면, 자동으로 1.5 Pro를 사용합니다.
-    target_model = 'gemini-3.0-pro-preview' 
-    fallback_model = 'gemini-1.5-pro'
-    
-    try:
-        model = genai.GenerativeModel(target_model)
-    except:
-        model = genai.GenerativeModel(fallback_model)
+    # [수정됨] 오류가 나는 3.0 대신, 가장 강력하고 안정적인 1.5 Pro 모델 사용
+    model = genai.GenerativeModel('gemini-1.5-pro')
 
     # 내장된 표준서 파일 읽기
     try:
@@ -97,19 +90,11 @@ def analyze_drawing_with_standard(drawing_blob):
     - 표준서의 '협의 사항'이나 특이사항이 있다면 한글로 명확히 명시해주세요.
     """
     
-    with st.spinner(f"AI({model.model_name})가 내장된 표준서를 검토하고 도면을 분석 중입니다..."):
+    with st.spinner("AI가 내장된 표준서를 검토하고 도면을 분석 중입니다... (약 15초 소요)"):
         try:
             response = model.generate_content([prompt, drawing_blob, standard_blob])
             return response.text
         except Exception as e:
-            # 모델 에러 발생 시(3.0 없음 등), 1.5 Pro로 재시도
-            if model.model_name == target_model:
-                try:
-                    fallback = genai.GenerativeModel(fallback_model)
-                    response = fallback.generate_content([prompt, drawing_blob, standard_blob])
-                    return response.text + "\n\n*(참고: 3.0 모델 연결 실패로 1.5 Pro로 분석했습니다)*"
-                except Exception as e2:
-                    return f"Error: {str(e2)}"
             return f"Error: {str(e)}"
 
 # --- 4. 메인 실행 화면 ---
