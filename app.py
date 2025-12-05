@@ -44,8 +44,12 @@ def analyze_drawing_with_standard(drawing_blob):
         st.error("⚠️ 서버에 API 키가 설정되지 않았습니다.")
         return "Error"
 
-    # [수정됨] 가장 안정적이고 빠른 Flash 모델 사용 (오류 해결)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # [수정됨] 모델 버전을 최신 버전(latest)으로 명시하여 404 오류 방지
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    except:
+        # 만약 latest도 안되면 기본 flash 시도
+        model = genai.GenerativeModel('gemini-1.5-flash')
 
     # 내장된 표준서 파일 읽기
     try:
