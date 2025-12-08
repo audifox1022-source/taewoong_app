@@ -4,11 +4,11 @@ import json
 import os
 import importlib.metadata
 import time
-# from google.generativeai import types  <-- 불필요한 충돌 방지 위해 제거
 
-# JSON Schema for forced structured output (AI의 출력 양식)
+# --- 1. JSON Schema 정의 및 기본 설정 ---
 RESPONSE_SCHEMA = {
     "type": "object",
+    # ... (Schema definition remains the same) ...
     "properties": {
         "analysis_status": {"type": "string", "description": "전체 검토 결과 (SUCCESS/WARNING/FAIL)."},
         "review_date": {"type": "string", "description": "오늘 날짜 (YYYY-MM-DD)."},
@@ -46,7 +46,8 @@ RESPONSE_SCHEMA = {
     "required": ["analysis_status", "review_date", "customer_requirements", "material_selection", "witness_points", "inspection_types"]
 }
 
-# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
+
+# --- 2. [핵심] 2.5 FLASH 우선 탐색 및 모델 설정 ---
 def get_working_model():
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
@@ -54,7 +55,9 @@ def get_working_model():
     except:
         return None, "API Key Error"
 
+    # [2.5 FLASH 최우선]: 가장 빠르고 안정적인 모델을 먼저 시도합니다.
     candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
@@ -73,19 +76,15 @@ def generate_json_output(document_blob):
 
     system_instruction = """
     당신은 (주)태웅의 **영업 수주 기술 검토 전문가**입니다.
-    업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 4가지 핵심 검토 항목(고객 요구사항, 재질 적합성, 입회 포인트, 검사 종류)에 대한 결과를 **반드시 JSON 형식으로만** 출력해야 합니다.
-
-    [검토 지침]
-    1. '재질 적합성(design_property_check)'은 요구 물성치(시방서에 기재된 강도, 경도 등) 대비 실제 투입 재질의 물성치를 비교하여 PASS/FAIL/WARNING 중 하나로 판단하십시오.
-    2. JSON Schema를 엄격히 준수하며, JSON 블록 외부에 다른 텍스트나 설명을 절대 출력하지 마십시오.
+    업로드된 고객 서류를 분석하여, 4가지 핵심 검토 항목에 대한 결과를 **반드시 JSON 형식으로만** 출력해야 합니다.
     """
     
     with st.spinner(f"AI({model_name})가 고객 문서를 분석 중입니다..."):
         try:
             # Gemini API 호출 (JSON mode 활성화)
             response = model.generate_content(
-                contents=[system_instruction, document_blob], # document_blob은 고객 서류
-                # [수정된 부분]: genai.types.GenerateContentConfig를 직접 사용
+                contents=[system_instruction, document_blob],
+                # [JSON CONFIG]: requirements.txt가 정상 업데이트되면 이 코드는 작동합니다.
                 config=genai.types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=RESPONSE_SCHEMA
@@ -94,8 +93,6 @@ def generate_json_output(document_blob):
             return json.loads(response.text)
             
         except Exception as e:
-            # AI가 JSON 형식을 맞추지 못했거나 기타 API 오류 발생 시
-            # 원인 파악을 위해 자세한 에러 메시지를 출력합니다.
             return {"error": f"JSON 분석 중 오류 발생: {str(e)}"}
 
 # --- 4. Streamlit 메인 화면 ---
@@ -129,9 +126,9 @@ if st.button("🚀 수주 검토 시작 및 JSON 생성", use_container_width=Tr
         if "error" in result_data:
             st.error(f"분석 실패: {result_data['error']}")
         else:
+            # ... (Result rendering logic remains the same) ...
             status = result_data.get('analysis_status', 'N/A')
             
-            # 결과에 따른 시각적 피드백
             if status == "SUCCESS":
                 st.success(f"SUCCESS: 고객 요구사항 분석 완료. 검토 상태: {status}")
             elif status == "WARNING":
@@ -142,6 +139,5 @@ if st.button("🚀 수주 검토 시작 및 JSON 생성", use_container_width=Tr
             st.markdown("### 📋 라우팅 확정 체크리스트")
             st.json(result_data)
             
-            # 복사하기 쉬운 코드 블록 출력
             st.subheader("📝 핵심 정보 요약 (복사 및 공유용)")
             st.code(json.dumps(result_data, indent=2, ensure_ascii=False), language="json")
