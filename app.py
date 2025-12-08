@@ -4,6 +4,9 @@ import json
 import os
 import importlib.metadata
 import time
+# --- [오류 수정: GenerateContentConfig 접근 경로 명시] ---
+from google.generativeai import types 
+# -----------------------------------------------------
 
 # JSON Schema for forced structured output (AI의 출력 양식)
 RESPONSE_SCHEMA = {
@@ -47,14 +50,12 @@ RESPONSE_SCHEMA = {
 
 # --- 2. [핵심] 작동하는 모델 자동 탐색 ---
 def get_working_model():
-    # API Key 설정
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
         genai.configure(api_key=api_key)
     except:
         return None, "API Key Error"
 
-    # 사용 가능한 모델 목록 테스트 (2.5 Flash 최우선)
     candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
     for model_name in candidates:
         try:
@@ -86,12 +87,12 @@ def generate_json_output(document_blob):
             # Gemini API 호출 (JSON mode 활성화)
             response = model.generate_content(
                 contents=[system_instruction, document_blob], # document_blob은 고객 서류
-                config=genai.types.GenerateContentConfig(
+                # [오류 수정 적용]: types.GenerateContentConfig를 명시적으로 사용
+                config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=RESPONSE_SCHEMA
                 )
             )
-            # JSON 문자열을 Python 딕셔너리로 변환하여 반환
             return json.loads(response.text)
             
         except Exception as e:
@@ -102,17 +103,11 @@ def generate_json_output(document_blob):
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
 st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱")
 
-# [진단용] 현재 상태 표시
 try:
     current_version = importlib.metadata.version("google-generativeai")
 except:
     current_version = "Unknown"
 st.caption(f"System Status: google-generativeai v{current_version}")
-
-st.markdown("""
-**[사용 방법]**
-* 고객의 시방서(PDF/Image)를 업로드하면, AI가 **재질 적합성, 입회 포인트, 검사 종류**를 분석하여 라우팅 확정용 JSON 데이터를 출력합니다.
-""")
 
 # 파일 업로더
 document_file = st.file_uploader(
@@ -125,10 +120,8 @@ if st.button("🚀 수주 검토 시작 및 JSON 생성", use_container_width=Tr
     if not document_file:
         st.error("⚠️ 검토할 고객 문서를 업로드해주세요.")
     else:
-        # 파일 데이터를 Blob 형태로 변환
         document_blob = {"mime_type": document_file.type, "data": document_file.getvalue()}
         
-        # JSON 분석 실행
         result_data = generate_json_output(document_blob)
         
         st.divider()
@@ -148,8 +141,8 @@ if st.button("🚀 수주 검토 시작 및 JSON 생성", use_container_width=Tr
                 st.error(f"FAIL: 검토 실패 또는 중요한 정보 누락. 검토 상태: {status}")
 
             st.markdown("### 📋 라우팅 확정 체크리스트")
-            st.json(result_data) # JSON 데이터를 인터랙티브하게 표시
+            st.json(result_data)
             
-            # 부서원 공유용 마크다운 요약 (복사하기 쉽도록)
+            # 복사하기 쉬운 코드 블록 출력
             st.subheader("📝 핵심 정보 요약 (복사 및 공유용)")
             st.code(json.dumps(result_data, indent=2, ensure_ascii=False), language="json")
