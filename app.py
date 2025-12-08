@@ -1,53 +1,29 @@
 import streamlit as st
 import google.generativeai as genai
-import json
+import json # JSON.loads는 에러 출력 시 필요하므로 유지
 import os
 import importlib.metadata
 import time
+from PIL import Image # 도면 미리보기를 위해 PIL 모듈 추가 (Image 타입 처리용)
 
-# --- 1. JSON Schema 정의 및 기본 설정 ---
-RESPONSE_SCHEMA = {
-    "type": "object",
-    # ... (Schema definition remains the same) ...
-    "properties": {
-        "analysis_status": {"type": "string", "description": "전체 검토 결과 (SUCCESS/WARNING/FAIL)."},
-        "review_date": {"type": "string", "description": "오늘 날짜 (YYYY-MM-DD)."},
-        "customer_requirements": {
-            "type": "object",
-            "properties": {
-                "material_spec": {"type": "string", "description": "고객이 요구한 재질 규격 (예: ASTM A105)."},
-                "final_dimensions": {"type": "string", "description": "도면상의 최종 치수 (예: OD 2500, T 300)."},
-                "quantity": {"type": "integer", "description": "요구 수량."},
-                "delivery_date": {"type": "string", "description": "요구 납기일 (YYYY-MM-DD)."}
-            }
-        },
-        "material_selection": {
-            "type": "object",
-            "properties": {
-                "design_property_check": {"type": "string", "description": "요구 물성치 대비 재질의 적합성 판단 결과 (PASS/FAIL/WARNING)."},
-                "actual_material_grade": {"type": "string", "description": "실제 투입할 재질 등급 (예: A105)."}
-            }
-        },
-        "witness_points": {
-            "type": "array",
-            "items": {"type": "string", "description": "입회가 필요한 공정 단계 (Forging, HeatTreatment_QT, NDT_Final 등)."},
-            "description": "고객 입회 필수 공정 리스트."
-        },
-        "inspection_types": {
-            "type": "object",
-            "description": "확정된 검사 종류 및 레벨",
-            "properties": {
-                "UT_Level": {"type": "string", "description": "UT 검사 레벨 (Level 1, 2, N/A)."},
-                "MPI": {"type": "string", "description": "MPI 요구 여부 (Required/N/A)."},
-                "Charpy": {"type": "string", "description": "Charpy Test 요구 여부 (Required/N/A)."}
-            }
-        }
-    },
-    "required": ["analysis_status", "review_date", "customer_requirements", "material_selection", "witness_points", "inspection_types"]
-}
+# --- 1. 앱 기본 설정 ---
+st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (Markdown)")
 
+# [진단용] 현재 상태 표시
+try:
+    current_version = importlib.metadata.version("google-generativeai")
+except:
+    current_version = "Unknown"
+st.caption(f"System Status: google-generativeai v{current_version}")
 
-# --- 2. [핵심] 2.5 FLASH 우선 탐색 및 모델 설정 ---
+st.markdown("""
+**[사용 방법]**
+* **JSON 오류 방지**를 위해 **Markdown 표** 출력 방식으로 변경되었습니다.
+* 고객 문서를 업로드하면, AI가 4가지 핵심 검토 항목을 분석하여 리포트를 생성합니다.
+""")
+
+# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
 def get_working_model():
     try:
         api_key = st.secrets["GOOGLE_API_KEY"]
@@ -55,9 +31,7 @@ def get_working_model():
     except:
         return None, "API Key Error"
 
-    # [2.5 FLASH 최우선]: 가장 빠르고 안정적인 모델을 먼저 시도합니다.
     candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-    
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
@@ -67,43 +41,53 @@ def get_working_model():
             
     return None, "No Working Model Found"
 
-# --- 3. JSON 출력 강제 함수 (Core Logic) ---
-def generate_json_output(document_blob):
+# --- 3. Markdown 리포트 생성 함수 (JSON 의존성 제거) ---
+def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
     if not model:
-        return {"error": f"사용 가능한 AI 모델을 찾을 수 없습니다. ({model_name})"}
+        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다. ({model_name})"
 
-    system_instruction = """
+    # System Instruction: Markdown Checklist 출력 강제
+    prompt = """
     당신은 (주)태웅의 **영업 수주 기술 검토 전문가**입니다.
-    업로드된 고객 서류를 분석하여, 4가지 핵심 검토 항목에 대한 결과를 **반드시 JSON 형식으로만** 출력해야 합니다.
+    업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 4가지 핵심 검토 항목에 대한 결과를 **반드시 아래 마크다운 체크리스트 형식으로만** 출력하십시오.
+
+    [검토 항목 및 지침]
+    1. 재질 적합성: 요구 물성치(시방서 기준) 대비 투입 재질의 적합성 판단 (PASS/FAIL/WARNING 중 하나로 명시).
+    2. 입회 포인트: 고객 또는 TPI 입회가 필요한 공정 단계 목록 (Forging, Heat Treatment, NDT 등).
+    3. 검사 종류: 확정된 NDE 및 기계적 시험 목록과 요구 레벨.
+    4. 고객 요구사항: 핵심 치수, 수량, 납기일 등 추출된 기본 정보.
+
+    [출력 포맷 시작]
+    ## 📋 라우팅 확정 기술 검토 체크리스트
+
+    | 항목 | 추출/판단 결과 | 근거 및 비고 |
+    |:---|:---|:---|
+    | **고객 요구 재질** | [고객 요구 재질 Spec] | [Final Dimensions, Quantity] |
+    | **재질 적합성** | [PASS/FAIL/WARNING] | [요구 물성치 대비 실제 재질 적합 여부] |
+    | **필수 입회 포인트** | [Forging, NDT Final 등 해당 단계 목록] | [시방서의 Witness/Hold Point 요구 근거] |
+    | **확정 검사 종류** | UT Level [레벨], MPI [Required/N/A], Charpy [Required/N/A] | [요구된 검사 목록 확정] |
+
+    **[종합 의견 및 다음 공정 라우팅 제안]**
+    - **분석 상태:** [SUCCESS/WARNING/FAIL 중 하나 명시]
+    - **라우팅 제안:** [다음 공정 순서 초안 제안]
     """
     
     with st.spinner(f"AI({model_name})가 고객 문서를 분석 중입니다..."):
         try:
-            # Gemini API 호출 (JSON mode 활성화)
+            # Markdown 출력이므로 response_mime_type 설정 제거
             response = model.generate_content(
-                contents=[system_instruction, document_blob],
-                # [JSON CONFIG]: requirements.txt가 정상 업데이트되면 이 코드는 작동합니다.
-                config=genai.types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=RESPONSE_SCHEMA
-                )
+                contents=[prompt, document_blob]
             )
-            return json.loads(response.text)
+            return response.text
             
         except Exception as e:
-            return {"error": f"JSON 분석 중 오류 발생: {str(e)}"}
+            return f"Error: 분석 중 오류 발생: {str(e)}"
 
 # --- 4. Streamlit 메인 화면 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱")
-
-try:
-    current_version = importlib.metadata.version("google-generativeai")
-except:
-    current_version = "Unknown"
-st.caption(f"System Status: google-generativeai v{current_version}")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (Markdown)")
 
 # 파일 업로더
 document_file = st.file_uploader(
@@ -112,32 +96,35 @@ document_file = st.file_uploader(
     help="도면, 시방서, 계약서 등 검토할 모든 문서를 올리세요."
 )
 
-if st.button("🚀 수주 검토 시작 및 JSON 생성", use_container_width=True):
+if st.button("🚀 수주 검토 시작 및 리포트 생성", use_container_width=True):
     if not document_file:
         st.error("⚠️ 검토할 고객 문서를 업로드해주세요.")
     else:
+        # 파일 데이터를 Blob 형태로 변환
         document_blob = {"mime_type": document_file.type, "data": document_file.getvalue()}
         
-        result_data = generate_json_output(document_blob)
+        col1, col2 = st.columns([1, 1.5])
         
-        st.divider()
-        st.subheader("✅ 최종 검토 결과 (JSON 출력)")
-
-        if "error" in result_data:
-            st.error(f"분석 실패: {result_data['error']}")
-        else:
-            # ... (Result rendering logic remains the same) ...
-            status = result_data.get('analysis_status', 'N/A')
+        with col1:
+            st.subheader("📄 문서 미리보기")
+            try:
+                if document_file.type.startswith('image'):
+                    st.image(document_file, use_container_width=True)
+                else: # PDF
+                    st.info(f"PDF 파일: {document_file.name} - AI가 내용을 직접 분석합니다.")
+            except Exception:
+                 st.info("문서 미리보기 오류. AI 분석은 계속 진행합니다.")
+        
+        with col2:
+            result_text = generate_markdown_report(document_blob)
             
-            if status == "SUCCESS":
-                st.success(f"SUCCESS: 고객 요구사항 분석 완료. 검토 상태: {status}")
-            elif status == "WARNING":
-                 st.warning(f"WARNING: 잠재적 위험 요소 발견. 검토 상태: {status}")
+            st.subheader("✅ 최종 검토 결과 리포트")
+
+            if result_text.startswith("Error"):
+                st.error(result_text)
             else:
-                st.error(f"FAIL: 검토 실패 또는 중요한 정보 누락. 검토 상태: {status}")
-
-            st.markdown("### 📋 라우팅 확정 체크리스트")
-            st.json(result_data)
-            
-            st.subheader("📝 핵심 정보 요약 (복사 및 공유용)")
-            st.code(json.dumps(result_data, indent=2, ensure_ascii=False), language="json")
+                st.markdown(result_text)
+                st.success("분석 완료!")
+                
+                st.subheader("📝 전체 결과 복사 (Copyable Text)")
+                st.code(result_text, language="markdown") # Markdown 코드 블록으로 복사 용이하게 출력
