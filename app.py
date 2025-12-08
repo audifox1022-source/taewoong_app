@@ -4,9 +4,7 @@ import json
 import os
 import importlib.metadata
 import time
-# --- [오류 수정: GenerateContentConfig 접근 경로 명시] ---
-from google.generativeai import types 
-# -----------------------------------------------------
+# from google.generativeai import types  <-- 불필요한 충돌 방지 위해 제거
 
 # JSON Schema for forced structured output (AI의 출력 양식)
 RESPONSE_SCHEMA = {
@@ -87,8 +85,8 @@ def generate_json_output(document_blob):
             # Gemini API 호출 (JSON mode 활성화)
             response = model.generate_content(
                 contents=[system_instruction, document_blob], # document_blob은 고객 서류
-                # [오류 수정 적용]: types.GenerateContentConfig를 명시적으로 사용
-                config=types.GenerateContentConfig(
+                # [수정된 부분]: genai.types.GenerateContentConfig를 직접 사용
+                config=genai.types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=RESPONSE_SCHEMA
                 )
@@ -97,6 +95,7 @@ def generate_json_output(document_blob):
             
         except Exception as e:
             # AI가 JSON 형식을 맞추지 못했거나 기타 API 오류 발생 시
+            # 원인 파악을 위해 자세한 에러 메시지를 출력합니다.
             return {"error": f"JSON 분석 중 오류 발생: {str(e)}"}
 
 # --- 4. Streamlit 메인 화면 ---
