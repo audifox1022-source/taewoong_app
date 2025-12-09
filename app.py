@@ -127,7 +127,8 @@ col1, col2 = st.columns([1, 1.2])
 # Left Column (Upload & Calculator)
 with col1:
     st.header("1️⃣ 문서 업로드")
-    document_file = st.uploader("고객 문서 (PDF/Image)", type=["pdf", "jpg", "png"])
+    # [수정 완료] st.uploader -> st.file_uploader
+    document_file = st.file_uploader("고객 문서 (PDF/Image)", type=["pdf", "jpg", "png"])
     
     # 중량 계산기 섹션 
     st.markdown("---")
