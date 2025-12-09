@@ -21,7 +21,7 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
 **[사용 방법]**
-* **출하 점검표**의 구조를 간소화하여 **연결 안정성**을 확보했습니다.
+* **출하 점검 목록**을 Markdown 목록 형식으로 간소화하여 **연결 안정성**을 확보했습니다.
 * 핵심 물성치 추출 및 검토 항목 분석 기능은 유지됩니다.
 """)
 
@@ -37,7 +37,7 @@ def get_working_model():
     except Exception as e:
         return None, "API Key Error"
 
-    # 모델 후보 목록을 2.5, 1.5 Flash, 1.5 Pro, Pro 순으로 시도
+    # 모델 후보 목록을 2.5, 1.5 Flash, 1.5 Pro, Pro 순으로 시도 (안정성 확보)
     candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'] 
     
     st.info(f"AI 모델 연결 시도 중... 후보 모델: {', '.join(candidates)}")
@@ -62,6 +62,7 @@ def generate_markdown_report(document_blob):
         return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다. ({model_name})"
 
     # System Instruction: Markdown Checklist 출력 강제
+    # **[출력 포맷 시작]** 부분에 간소화된 출하 목록을 적용했습니다.
     prompt = f"""
     당신은 (주)태웅의 **영업 수주 기술 검토 및 출하 전문가**입니다.
     업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 핵심 검토 항목 및 **최종 출하 점검 목록**을 **반드시 아래 마크다운 형식으로만** 출력하십시오.
@@ -89,11 +90,11 @@ def generate_markdown_report(document_blob):
 
     ---
     
-    ## 📦 출하 전 최종 점검 목록 (Simple Checklist)
-    * 최종 검사(Final Inspection) 승인 서류 번호: [AI가 추출한 서류 번호 또는 요구사항 명시]
-    * 출하 마킹 및 태그 요구사항: [요구 마킹 코드 및 방식]
-    * 포장 및 방청 사양: [요구되는 포장 및 방청 방법]
-    * 필수 선적 서류 목록: [MTC, CoC, Packing List 등 요구된 필수 서류 목록]
+    ## 📦 출하 전 최종 점검 목록 (Pre-Shipment Checklist)
+    * **최종 검사 승인** 확인 (문서 근거: [AI가 추출한 서류 번호 또는 요구사항])
+    * **출하 마킹/태그** 요구사항 충족 여부 (Spec. 근거: [요구 마킹 코드 및 방식])
+    * **포장/방청** 사양 준수 여부 (Spec. 근거: [요구되는 포장 및 방청 방법])
+    * **필수 선적 서류** 준비 완료 (목록: [MTC, CoC, Packing List 등 요구된 필수 서류])
     """
     
     with st.spinner(f"AI({model_name})가 고객 문서를 분석 중입니다..."):
