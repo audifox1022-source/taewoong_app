@@ -4,11 +4,11 @@ import os
 import importlib.metadata
 import base64 # PDF 미리보기를 위해 추가
 from PIL import Image # 도면 미리보기를 위해 PIL 모듈 추가
-import io # 이미지 미리보기 바이트 스트림 처리용
+import io 
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="글로벌 영업 수주 기술 검토 앱", layout="wide")
-st.title("🌐 AI 글로벌 스펙 검토 및 다국어 지원 앱 (최종)")
+st.title("🌐 AI 글로벌 스펙 검토 및 다국어 지원 앱 (최종 안정화 버전)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -19,31 +19,40 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
 **[사용 방법]**
-* 고객 문서를 업로드하면, AI가 **국제 표준 코드(ASME, API, EN/ISO 등)** 및 **INCOTERMS**를 기반으로 핵심 검토 항목을 분석합니다.
+* 고객 문서를 업로드하면, AI가 **국제 표준 코드** 및 **INCOTERMS**를 기반으로 핵심 검토 항목을 분석합니다.
 * **영문 문서는 자동으로 한글화**되어 보고서에 포함됩니다.
 * **출하 조건 및 매도인/매수인 책임 범위**까지 분석합니다.
 """)
 
-# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
+# --- 2. [핵심] 작동하는 모델 자동 탐색 (API Key 진단 로직 추가) ---
 def get_working_model():
     try:
-        # Streamlit Secrets에서 API Key 로드
+        # ⚠️ 핵심 진단: Streamlit Secrets에 API 키가 있는지 확인
+        if "GOOGLE_API_KEY" not in st.secrets:
+            st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY가 설정되어 있지 않습니다. 키를 설정해주세요.")
+            return None, "API Key Missing in Secrets"
+            
         api_key = st.secrets["GOOGLE_API_KEY"]
         genai.configure(api_key=api_key)
     except Exception as e:
-        st.error(f"API Key 설정 오류: {e}")
+        st.error(f"API Key 설정 또는 라이브러리 구성 오류: {e}")
         return None, "API Key Error"
 
-    # 이미지 및 복잡한 언어 처리를 위해 gemini-1.5-flash 또는 gemini-1.5-pro 선호
+    # 이미지 및 복잡한 언어 처리를 위한 모델 후보 목록
     candidates = ['gemini-1.5-flash-001', 'gemini-1.5-pro-001', 'gemini-pro']
+    
+    st.info(f"AI 모델 연결 시도 중... 후보 모델: {', '.join(candidates)}")
+    
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
-            # 간단한 테스트를 통해 모델 작동 여부 확인
-            test_response = model.generate_content("hello", timeout=5)
-            if test_response.text:
-                return model, model_name
-        except Exception:
+            # 간단한 테스트를 통해 모델 작동 여부 및 권한 확인
+            model.generate_content("test", timeout=10) # 텍스트 생성 테스트
+            st.success(f"✅ AI 모델 연결 성공: {model_name}")
+            return model, model_name
+        except Exception as e:
+            # 실패 시 로그 출력 (디버깅 용도)
+            # st.warning(f"모델 {model_name} 연결 실패: {e}")
             continue
             
     return None, "No Working Model Found"
