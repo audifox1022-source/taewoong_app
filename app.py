@@ -4,13 +4,13 @@ import json
 import os
 import importlib.metadata
 import time
-import base64 # PDF 미리보기를 위해 추가
-from PIL import Image # 도면 미리보기를 위해 PIL 모듈 추가 (Image 타입 처리용)
+import base64 
+from PIL import Image 
 import io 
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (1.5 & 2.5 통합 버전)")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (출하 점검표 추가)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -22,8 +22,7 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 st.markdown("""
 **[사용 방법]**
 * 고객 문서를 업로드하면, AI가 핵심 검토 항목을 분석합니다.
-* **Gemini 2.5 및 1.5 모델을 모두 시도**하여 안정적인 연결을 보장합니다.
-* **핵심 물성치(항복강도, 샤르피 값 등)를 추출**하여 재질 적합성 판단 근거를 명확히 제시합니다.
+* **핵심 물성치 및 출하 전 최종 점검표를 자동으로 생성**하여 실무 효율을 극대화합니다.
 """)
 
 # --- 2. [핵심] 작동하는 모델 자동 탐색 (1.5 및 2.5 계열 통합) ---
@@ -56,7 +55,7 @@ def get_working_model():
             
     return None, "No Working Model Found"
 
-# --- 3. Markdown 리포트 생성 함수 (물성치 추출 강화 적용) ---
+# --- 3. Markdown 리포트 생성 함수 (물성치 추출 및 출하 점검표 추가) ---
 def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
@@ -65,8 +64,8 @@ def generate_markdown_report(document_blob):
 
     # System Instruction: Markdown Checklist 출력 강제
     prompt = f"""
-    당신은 (주)태웅의 **영업 수주 기술 검토 전문가**입니다.
-    업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 4가지 핵심 검토 항목에 대한 결과를 **반드시 아래 마크다운 체크리스트 형식으로만** 출력하십시오.
+    당신은 (주)태웅의 **영업 수주 기술 검토 및 출하 전문가**입니다.
+    업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 핵심 검토 항목 및 **최종 출하 점검표**를 **반드시 아래 마크다운 형식으로만** 출력하십시오.
 
     [검토 항목 및 지침]
     1. 재질 적합성: 요구 물성치(**항복 강도, 인장 강도, 샤르피 충격 에너지, 시험 온도 등 정량적 수치**)를 추출하고 투입 재질의 적합성 판단 (PASS/FAIL/WARNING 중 하나로 명시).
@@ -88,6 +87,16 @@ def generate_markdown_report(document_blob):
     **[종합 의견 및 다음 공정 라우팅 제안]**
     - **분석 상태:** [SUCCESS/WARNING/FAIL 중 하나 명시]
     - **라우팅 제안:** [다음 공정 순서 초안 제안]
+
+    ---
+    
+    ## 📦 출하 전 최종 점검표 (Pre-Shipment Checklist)
+    | 점검 항목 | AI 판단 근거 (문서 기준) | 담당자 최종 확인 (O/X) |
+    |:---|:---|:---|
+    | 최종 검사(Final Inspection) 결과 승인 여부 | [승인된 검사 보고서 번호 또는 시방서 요구사항] | [O/X] |
+    | 출하 마킹 및 태그 부착 완료 여부 (Spec. 준수) | [요구 마킹 코드 및 방식 (예: 고객 로고, Heat No.)] | [O/X] |
+    | 포장 기준 충족 여부 (방청 및 ISPM-15 등) | [요구되는 포장 사양 및 방청 방법] | [O/X] |
+    | 선적 서류(MTC, CoC, Packing List) 준비 완료 여부 | [요구된 필수 서류 목록] | [O/X] |
     """
     
     with st.spinner(f"AI({model_name})가 고객 문서를 분석 중입니다..."):
