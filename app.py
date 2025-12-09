@@ -8,7 +8,7 @@ import io
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="글로벌 영업 수주 기술 검토 앱", layout="wide")
-st.title("🌐 AI 글로벌 스펙 검토 및 다국어 지원 앱 (최소 안정화 버전)")
+st.title("🌐 AI 글로벌 스펙 검토 및 다국어 지원 앱 (최소 안정화 버전 - 2.5 Flash 적용)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -24,7 +24,7 @@ st.markdown("""
 * **출하 조건 및 매도인/매수인 책임 범위**까지 분석합니다.
 """)
 
-# --- 2. [핵심] 작동하는 모델 자동 탐색 (1.5 Flash 단일 및 Time-out 20초) ---
+# --- 2. [핵심] 작동하는 모델 자동 탐색 (2.5 Flash 단일 및 Time-out 20초) ---
 def get_working_model():
     try:
         # ⚠️ 핵심 진단: Streamlit Secrets에 API 키가 있는지 확인
@@ -38,15 +38,15 @@ def get_working_model():
         st.error(f"API Key 설정 또는 라이브러리 구성 오류: {e}")
         return None, "API Key Error"
 
-    # 이미지 및 복잡한 언어 처리를 위한 모델 후보 목록 (가장 안정적인 모델 하나로 단일화)
-    candidates = ['gemini-1.5-flash-001']
+    # 모델 후보 목록을 'gemini-2.5-flash'로 변경 (사용자 요청 반영)
+    candidates = ['gemini-2.5-flash']
     
     st.info(f"AI 모델 연결 시도 중... 후보 모델: {', '.join(candidates)}")
     
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
-            # Time-out 시간을 20초로 연장
+            # Time-out 시간을 20초로 연장 유지
             model.generate_content("test", timeout=20) # 텍스트 생성 테스트
             st.success(f"✅ AI 모델 연결 성공: {model_name}")
             return model, model_name
