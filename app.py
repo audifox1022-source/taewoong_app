@@ -1,9 +1,12 @@
+# [수정된 전체 APP.PY 코드] - 미리보기 오류 시 안심 메시지 출력
+
 import streamlit as st
 import google.generativeai as genai
 import json 
 import os
 import importlib.metadata
 import time
+import base64 
 from PIL import Image 
 import io 
 
@@ -20,11 +23,11 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
 **[사용 방법]**
+* **안심하세요:** PDF 용량이 클 경우 미리보기는 생략될 수 있으나, **AI 분석은 정상 진행**됩니다.
 * **모델 복구:** 작동이 확인된 **Gemini 2.5 Flash** 모델을 최우선으로 연결합니다.
-* **출하 점검표:** 안정적인 생성을 위해 간소화된 목록 형식을 유지합니다.
 """)
 
-# --- 2. [핵심] 작동하는 모델 자동 탐색 (2.5 Flash 최우선) ---
+# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
 def get_working_model():
     try:
         if "GOOGLE_API_KEY" not in st.secrets:
@@ -36,27 +39,21 @@ def get_working_model():
     except:
         return None, "API Key Error"
 
-    # [핵심 수정] 사용자 환경에서 작동했던 'gemini-2.5-flash'를 1순위로 복구합니다.
-    # 404 오류 대비를 위해 구체적인 버전명도 백업으로 둡니다.
+    # [핵심] 사용자 환경에서 작동했던 'gemini-2.5-flash'를 1순위로 유지
     candidates = [
-        'gemini-2.5-flash',        # 사용자 확인 작동 모델 (1순위)
-        'gemini-1.5-flash-latest', # 최신 1.5 (2순위)
-        'gemini-1.5-flash-001',    # 고정 1.5 (3순위)
-        'gemini-1.5-flash',        # 일반 1.5
-        'gemini-pro'               # 구버전 백업
+        'gemini-2.5-flash',        
+        'gemini-1.5-flash-latest', 
+        'gemini-1.5-flash',        
+        'gemini-pro'               
     ]
-    
-    # st.info(f"AI 모델 연결 시도 중... (후보: {len(candidates)}개)")
     
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
-            # 타임아웃 없이 간단한 테스트
             model.generate_content("test")
             st.success(f"✅ AI 모델 연결 성공: {model_name}")
             return model, model_name
         except Exception as e:
-            # st.warning(f"{model_name} 연결 실패.. 다음 시도")
             continue
             
     return None, "No Working Model Found"
@@ -66,10 +63,9 @@ def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
     if not model:
-        # 어떤 모델도 연결되지 않았을 때 후보 목록을 보여줍니다.
-        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다. (시도한 모델: gemini-2.5-flash 등)"
+        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다."
 
-    # [프롬프트] 출하 점검표(Pre-Shipment Checklist) 포함
+    # [프롬프트] 출하 점검표 포함
     prompt = """
     당신은 (주)태웅의 **영업 수주 기술 검토 및 출하 전문가**입니다.
     업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 5가지 항목에 대한 결과를 **반드시 아래 마크다운 체크리스트 형식으로만** 출력하십시오.
@@ -107,7 +103,6 @@ def generate_markdown_report(document_blob):
     
     with st.spinner(f"AI({model_name})가 문서를 상세 분석 중입니다..."):
         try:
-            # 타임아웃 제한 해제 (2.5 모델은 빠르지만 안전을 위해)
             response = model.generate_content(
                 contents=[prompt, document_blob]
             )
@@ -129,7 +124,6 @@ if st.button("🚀 수주 검토 시작 및 리포트 생성", use_container_wid
     if not document_file:
         st.error("⚠️ 검토할 고객 문서를 업로드해주세요.")
     else:
-        # 파일 데이터를 Blob 형태로 변환
         document_blob = {"mime_type": document_file.type, "data": document_file.getvalue()}
         
         col1, col2 = st.columns([1, 1.5])
@@ -140,15 +134,20 @@ if st.button("🚀 수주 검토 시작 및 리포트 생성", use_container_wid
                 if document_file.type.startswith('image'):
                     st.image(document_file, use_container_width=True)
                 elif document_file.type == 'application/pdf':
-                     # PDF 파일은 base64 인코딩하여 iframe으로 표시
-                    base64_pdf = base64.b64encode(document_file.getvalue()).decode('utf-8')
-                    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
-                    st.caption(f"PDF 파일: {document_file.name} - AI가 내용을 직접 분석합니다.")
+                    # [수정] PDF 미리보기 시도 (실패 시 안심 메시지 출력)
+                    try:
+                        base64_pdf = base64.b64encode(document_file.getvalue()).decode('utf-8')
+                        # PDF가 너무 크면 여기서 브라우저가 힘들어 할 수 있음
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                        st.caption(f"PDF 파일: {document_file.name}")
+                    except Exception:
+                         st.success(f"✅ {document_file.name} 업로드 완료! (파일이 커서 미리보기는 생략합니다)")
                 else:
                     st.info(f"파일: {document_file.name} - AI 분석은 계속 진행합니다.")
             except Exception:
-                st.info("문서 미리보기 오류. AI 분석은 계속 진행합니다.")
+                 # 여기가 실행되어도 AI 분석은 멈추지 않습니다.
+                 st.success("✅ 문서 업로드 완료! (미리보기 생략, AI 분석 시작)")
         
         with col2:
             result_text = generate_markdown_report(document_blob)
