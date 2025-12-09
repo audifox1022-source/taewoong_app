@@ -1,16 +1,16 @@
 import streamlit as st
 import google.generativeai as genai
-import json # JSON.loads는 에러 출력 시 필요하므로 유지
+import json 
 import os
 import importlib.metadata
 import time
-import base64 # PDF 미리보기를 위해 추가 (추가된 기능 유지)
+import base64 # PDF 미리보기를 위해 추가
 from PIL import Image # 도면 미리보기를 위해 PIL 모듈 추가 (Image 타입 처리용)
-import io # PDF 미리보기를 위한 io 모듈 (추가된 기능 유지)
+import io 
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (물성치 강화 버전)")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (1.5 & 2.5 통합 버전)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -22,10 +22,11 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 st.markdown("""
 **[사용 방법]**
 * 고객 문서를 업로드하면, AI가 핵심 검토 항목을 분석합니다.
+* **Gemini 2.5 및 1.5 모델을 모두 시도**하여 안정적인 연결을 보장합니다.
 * **핵심 물성치(항복강도, 샤르피 값 등)를 추출**하여 재질 적합성 판단 근거를 명확히 제시합니다.
 """)
 
-# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
+# --- 2. [핵심] 작동하는 모델 자동 탐색 (1.5 및 2.5 계열 통합) ---
 def get_working_model():
     try:
         if "GOOGLE_API_KEY" not in st.secrets:
@@ -37,19 +38,20 @@ def get_working_model():
     except Exception as e:
         return None, "API Key Error"
 
-    # 모델 후보 목록 (가장 안정적인 모델 2개로 복원)
-    candidates = ['gemini-1.5-flash', 'gemini-pro']
+    # 모델 후보 목록을 2.5, 1.5 Flash, 1.5 Pro, Pro 순으로 시도
+    candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'] 
     
     st.info(f"AI 모델 연결 시도 중... 후보 모델: {', '.join(candidates)}")
     
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
-            # 기본 Time-out 10초로 복원
+            # 기본 Time-out 10초 유지
             model.generate_content("test", timeout=10)
             st.success(f"✅ AI 모델 연결 성공: {model_name}")
             return model, model_name
         except Exception as e:
+            # st.warning(f"모델 {model_name} 연결 실패: {e}")
             continue
             
     return None, "No Working Model Found"
@@ -99,9 +101,6 @@ def generate_markdown_report(document_blob):
             return f"Error: 분석 중 오류 발생: {str(e)}"
 
 # --- 4. Streamlit 메인 화면 ---
-# 중복되는 st.set_page_config 및 st.title 제거
-# st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-# st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (Markdown)")
 
 # 파일 업로더
 document_file = st.file_uploader(
@@ -125,7 +124,7 @@ if st.button("🚀 수주 검토 시작 및 리포트 생성", use_container_wid
                 if document_file.type.startswith('image'):
                     st.image(document_file, use_container_width=True)
                 elif document_file.type == 'application/pdf':
-                    # PDF 파일은 base64 인코딩하여 iframe으로 표시 (이전 단계에서 추가된 기능)
+                    # PDF 파일은 base64 인코딩하여 iframe으로 표시
                     base64_pdf = base64.b64encode(document_file.getvalue()).decode('utf-8')
                     pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>'
                     st.markdown(pdf_display, unsafe_allow_html=True)
