@@ -8,13 +8,13 @@ from PIL import Image
 import io 
 import base64
 import math 
-# [NEW] 엑셀 다운로드 기능을 위해 추가된 라이브러리
 import pandas as pd
-import re # 정규 표현식 모듈 추가 (Markdown 테이블 추출용)
+import re 
+import xlsxwriter # pandas의 엑셀 출력을 위해 필요
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (Excel 리포트)")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (출하/포장 통합)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -25,8 +25,8 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
 **[최종 업그레이드 기능]**
-* **✅ Excel 다운로드:** AI 분석의 핵심 결과표를 **.xlsx 파일**로 다운로드하여 데이터베이스로 즉시 활용 가능합니다.
-* **📄 문서 추적성, 중량/원가 계산기, 공정 코멘트** 기능 유지.
+* **📦 출하/포장 필수 검토:** INCOTERMS, 방청, ISPM-15, 마킹 요구사항을 필수적으로 분석합니다.
+* **✅ Excel 다운로드** 및 **⚖️ 중량/원가 계산기** 기능 유지.
 """)
 
 # --- 2. [핵심] 작동하는 모델 자동 탐색 ---
@@ -61,16 +61,16 @@ STANDARD_SPECS_DB = """
 (상세 물성치 생략 - AI는 내부 지식 활용 가능)
 """
 
-# --- 4. Markdown 리포트 생성 함수 ---
+# --- 4. Markdown 리포트 생성 함수 (출하/포장 통합) ---
 def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
     if not model:
         return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다."
 
-    # [프롬프트] 추적성 및 공정 코멘트 의무화
+    # [프롬프트] 출하/포장 항목 추가 및 의무화
     prompt = f"""
-    당신은 (주)태웅의 **글로벌 스펙 기술 검토 및 공정 전문가**입니다.
+    당신은 (주)태웅의 **글로벌 스펙 기술 검토, 공정 및 물류 전문가**입니다.
     업로드된 문서를 분석하고, 아래 지침에 따라 결과를 출력하십시오.
 
     {STANDARD_SPECS_DB}
@@ -79,8 +79,8 @@ def generate_markdown_report(document_blob):
     1. **문서 식별:** 분석된 정보의 출처 **문서 번호(Doc No.)와 개정 번호(Rev. No.)**를 필수로 추출하십시오.
     2. **규격 대조:** 고객 요구 물성치가 국제 표준값(Min/Max)을 만족하는지 판단하십시오.
     3. **치수 추출:** 계산기 입력을 위해 제품의 핵심 치수(OD, ID, H)를 명확히 찾아주십시오.
-    4. **주요 공정 품질 코멘트:** 단조, 열처리, 절단 작업 시 재질 특성과 시방서 요구사항을 고려하여 생산 부서가 주의해야 할 핵심 위험 요소(품질, 변형, 안전)를 최소 3가지 이상 작성하십시오.
-    5. **중요:** 첫 번째 표(## 📋 글로벌 표준 규격 대조...)는 **가장 중요한 데이터**이며, 이 표를 추출하기 쉬운 **정확한 Markdown 형식**으로 출력해야 합니다.
+    4. **물류 및 출하 조건:** **INCOTERMS (예: FOB Busan)**, **포장 방식 (목상자, 파렛트)**, **방청(Rust Prevention) 요구사항**을 필수적으로 추출하십시오.
+    5. **주요 공정 품질 코멘트:** 단조, 열처리, 절단 작업 시 재질 특성을 고려하여 위험 요소를 작성하십시오.
 
     [출력 포맷]
     ## 📋 글로벌 표준 규격 대조 및 기술 검토
@@ -94,6 +94,13 @@ def generate_markdown_report(document_blob):
     | **충격시험** | [값] | [Drawing Note 5] | [판정] |
 
     ---
+    ### 📦 출하 및 물류 필수 검토 사항
+    * **INCOTERMS (2020 기준):** [예: FOB Busan, Incoterms 2020]
+    * **포장 방식:** [예: 밀폐형 목상자, 파렛트 포장]
+    * **목재 포장 규정:** [예: ISPM-15 Heat Treatment 필수 여부]
+    * **방청 처리:** [요구되는 방청 오일, VCI Paper 등]
+    * **마킹 요구사항:** [선적 마크, 고객사 로고 등 상세 요구사항]
+
     ### 🚨 주요 공정별 위험 및 품질 코멘트
     * **단조(Forging):** [코멘트]
     * **열처리(Heat Treatment):** [코멘트]
@@ -116,14 +123,12 @@ def generate_markdown_report(document_blob):
         except Exception as e:
             return f"Error: 분석 중 오류 발생: {str(e)}"
 
-# --- 5. [NEW] Markdown 테이블을 DataFrame으로 변환하는 함수 ---
+# --- 5. [Markdown 테이블 추출 및 Excel 변환 함수] ---
 def markdown_table_to_df(markdown_text):
     """
     Markdown 텍스트에서 첫 번째 테이블을 찾아 Pandas DataFrame으로 변환합니다.
     """
     try:
-        # 1. Markdown 테이블을 찾기 위한 정규 표현식
-        # 테이블은 |로 시작하고, 그 다음 줄에 |---|로 구분선이 있는 패턴을 찾습니다.
         table_match = re.search(r'(\|.*\|(?:\s*\|---[^|\r\n]*\|)+[\s\S]*?)(?=\n\n|\Z)', markdown_text, re.MULTILINE)
         
         if not table_match:
@@ -132,16 +137,13 @@ def markdown_table_to_df(markdown_text):
         table_string = table_match.group(1).strip()
         lines = table_string.split('\n')
         
-        # 헤더 라인과 데이터 라인 추출
         header_line = lines[0].strip()
         data_lines = [line.strip() for line in lines if not line.startswith('|---')]
         
-        # 헤더 추출 (첫 번째 라인)
         headers = [h.strip() for h in data_lines[0].split('|') if h.strip()]
         
-        # 데이터 추출 (세 번째 라인부터)
         data = []
-        for line in data_lines[2:]: # 0:헤더, 1:구분선, 2:첫 데이터
+        for line in data_lines[2:]:
              if line:
                 row = [d.strip() for d in line.split('|') if d.strip()]
                 if len(row) == len(headers):
@@ -151,7 +153,7 @@ def markdown_table_to_df(markdown_text):
         return df
         
     except Exception as e:
-        st.warning(f"테이블 변환 중 오류 발생: {e}")
+        # st.warning(f"테이블 변환 중 오류 발생: {e}")
         return None
 
 # --- 6. Streamlit 메인 화면 구성 ---
@@ -160,7 +162,7 @@ col1, col2 = st.columns([1, 1.2])
 # Left Column (Upload & Calculator)
 with col1:
     st.header("1️⃣ 문서 업로드")
-    document_file = st.file_uploader("고객 문서 (PDF/Image)", type=["pdf", "jpg", "png"])
+    document_file = st.uploader("고객 문서 (PDF/Image)", type=["pdf", "jpg", "png"])
     
     # 중량 계산기 섹션 
     st.markdown("---")
@@ -216,13 +218,14 @@ with col2:
             st.markdown(result_text)
             st.success("분석 완료!")
             
-            # [NEW] 엑셀 다운로드 처리
+            # [NEW] Excel 다운로드 처리
             df_report = markdown_table_to_df(result_text)
             if df_report is not None and not df_report.empty:
                 # 엑셀 파일로 변환
                 @st.cache_data
                 def convert_df_to_excel(df):
                     output = io.BytesIO()
+                    # xlsxwriter 엔진 사용
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         df.to_excel(writer, index=False, sheet_name='AI_검토결과')
                     return output.getvalue()
