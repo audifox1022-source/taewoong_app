@@ -8,9 +8,7 @@ from PIL import Image
 import io 
 import base64
 import math 
-import pandas as pd
-import re 
-import xlsxwriter # pandas의 엑셀 출력을 위해 필요
+# [DELETED] pandas, xlsxwriter, re 모듈은 Excel 기능을 위해 삭제됨
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
@@ -24,9 +22,9 @@ except:
 st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
-**[최종 업그레이드 기능]**
+**[최종 기능]**
 * **📦 출하/포장 필수 검토:** INCOTERMS, 방청, ISPM-15, 마킹 요구사항을 필수적으로 분석합니다.
-* **✅ Excel 다운로드** 및 **⚖️ 중량/원가 계산기** 기능 유지.
+* **추적성, 중량/원가 계산기, 공정 코멘트** 기능 유지.
 """)
 
 # --- 2. [핵심] 작동하는 모델 자동 탐색 ---
@@ -68,7 +66,7 @@ def generate_markdown_report(document_blob):
     if not model:
         return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다."
 
-    # [프롬프트] 출하/포장 항목 추가 및 의무화
+    # [프롬프트] 출하/포장 항목 통합 및 추적성, 공정 코멘트 의무화
     prompt = f"""
     당신은 (주)태웅의 **글로벌 스펙 기술 검토, 공정 및 물류 전문가**입니다.
     업로드된 문서를 분석하고, 아래 지침에 따라 결과를 출력하십시오.
@@ -123,40 +121,7 @@ def generate_markdown_report(document_blob):
         except Exception as e:
             return f"Error: 분석 중 오류 발생: {str(e)}"
 
-# --- 5. [Markdown 테이블 추출 및 Excel 변환 함수] ---
-def markdown_table_to_df(markdown_text):
-    """
-    Markdown 텍스트에서 첫 번째 테이블을 찾아 Pandas DataFrame으로 변환합니다.
-    """
-    try:
-        table_match = re.search(r'(\|.*\|(?:\s*\|---[^|\r\n]*\|)+[\s\S]*?)(?=\n\n|\Z)', markdown_text, re.MULTILINE)
-        
-        if not table_match:
-            return None
-
-        table_string = table_match.group(1).strip()
-        lines = table_string.split('\n')
-        
-        header_line = lines[0].strip()
-        data_lines = [line.strip() for line in lines if not line.startswith('|---')]
-        
-        headers = [h.strip() for h in data_lines[0].split('|') if h.strip()]
-        
-        data = []
-        for line in data_lines[2:]:
-             if line:
-                row = [d.strip() for d in line.split('|') if d.strip()]
-                if len(row) == len(headers):
-                    data.append(row)
-
-        df = pd.DataFrame(data, columns=headers)
-        return df
-        
-    except Exception as e:
-        # st.warning(f"테이블 변환 중 오류 발생: {e}")
-        return None
-
-# --- 6. Streamlit 메인 화면 구성 ---
+# --- 5. Streamlit 메인 화면 구성 ---
 col1, col2 = st.columns([1, 1.2])
 
 # Left Column (Upload & Calculator)
@@ -217,28 +182,6 @@ with col2:
         else:
             st.markdown(result_text)
             st.success("분석 완료!")
-            
-            # [NEW] Excel 다운로드 처리
-            df_report = markdown_table_to_df(result_text)
-            if df_report is not None and not df_report.empty:
-                # 엑셀 파일로 변환
-                @st.cache_data
-                def convert_df_to_excel(df):
-                    output = io.BytesIO()
-                    # xlsxwriter 엔진 사용
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        df.to_excel(writer, index=False, sheet_name='AI_검토결과')
-                    return output.getvalue()
-
-                excel_data = convert_df_to_excel(df_report)
-                
-                st.download_button(
-                    label="💾 Excel (.xlsx) 핵심 데이터 다운로드",
-                    data=excel_data,
-                    file_name=f"수주검토_핵심데이터_{time.strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
             
             st.markdown("---")
             st.subheader("📝 전체 결과 (Copyable Text)")
