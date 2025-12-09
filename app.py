@@ -8,10 +8,13 @@ from PIL import Image
 import io 
 import base64
 import math 
+# [NEW] 엑셀 다운로드 기능을 위해 추가된 라이브러리
+import pandas as pd
+import re # 정규 표현식 모듈 추가 (Markdown 테이블 추출용)
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (추적성 강화)")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (Excel 리포트)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -21,8 +24,9 @@ except:
 st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
-**[업그레이드 기능]**
-* **📄 문서 추적성 강화:** 모든 분석 결과에 **문서 번호와 개정 번호**를 필수로 명시합니다.
+**[최종 업그레이드 기능]**
+* **✅ Excel 다운로드:** AI 분석의 핵심 결과표를 **.xlsx 파일**로 다운로드하여 데이터베이스로 즉시 활용 가능합니다.
+* **📄 문서 추적성, 중량/원가 계산기, 공정 코멘트** 기능 유지.
 """)
 
 # --- 2. [핵심] 작동하는 모델 자동 탐색 ---
@@ -57,14 +61,14 @@ STANDARD_SPECS_DB = """
 (상세 물성치 생략 - AI는 내부 지식 활용 가능)
 """
 
-# --- 4. Markdown 리포트 생성 함수 (추적성 강화) ---
+# --- 4. Markdown 리포트 생성 함수 ---
 def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
     if not model:
         return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다."
 
-    # [프롬프트] 추적성(Doc No, Rev No) 추출 의무화
+    # [프롬프트] 추적성 및 공정 코멘트 의무화
     prompt = f"""
     당신은 (주)태웅의 **글로벌 스펙 기술 검토 및 공정 전문가**입니다.
     업로드된 문서를 분석하고, 아래 지침에 따라 결과를 출력하십시오.
@@ -72,11 +76,11 @@ def generate_markdown_report(document_blob):
     {STANDARD_SPECS_DB}
 
     [검토 및 출력 지침]
-    1. **문서 식별:** 분석된 정보의 출처 문서 번호(Doc No.)와 개정 번호(Rev. No.)를 필수로 추출하십시오.
+    1. **문서 식별:** 분석된 정보의 출처 **문서 번호(Doc No.)와 개정 번호(Rev. No.)**를 필수로 추출하십시오.
     2. **규격 대조:** 고객 요구 물성치가 국제 표준값(Min/Max)을 만족하는지 판단하십시오.
     3. **치수 추출:** 계산기 입력을 위해 제품의 핵심 치수(OD, ID, H)를 명확히 찾아주십시오.
-    4. **출하 점검:** 최종 출하 전 확인해야 할 필수 항목을 목록화하십시오.
-    5. **주요 공정 품질 코멘트:** 단조, 열처리, 절단 작업 시 재질 특성과 시방서 요구사항을 고려하여 생산 부서가 주의해야 할 핵심 위험 요소를 작성하십시오.
+    4. **주요 공정 품질 코멘트:** 단조, 열처리, 절단 작업 시 재질 특성과 시방서 요구사항을 고려하여 생산 부서가 주의해야 할 핵심 위험 요소(품질, 변형, 안전)를 최소 3가지 이상 작성하십시오.
+    5. **중요:** 첫 번째 표(## 📋 글로벌 표준 규격 대조...)는 **가장 중요한 데이터**이며, 이 표를 추출하기 쉬운 **정확한 Markdown 형식**으로 출력해야 합니다.
 
     [출력 포맷]
     ## 📋 글로벌 표준 규격 대조 및 기술 검토
@@ -112,22 +116,58 @@ def generate_markdown_report(document_blob):
         except Exception as e:
             return f"Error: 분석 중 오류 발생: {str(e)}"
 
-# --- 5. Streamlit 메인 화면 구성 ---
+# --- 5. [NEW] Markdown 테이블을 DataFrame으로 변환하는 함수 ---
+def markdown_table_to_df(markdown_text):
+    """
+    Markdown 텍스트에서 첫 번째 테이블을 찾아 Pandas DataFrame으로 변환합니다.
+    """
+    try:
+        # 1. Markdown 테이블을 찾기 위한 정규 표현식
+        # 테이블은 |로 시작하고, 그 다음 줄에 |---|로 구분선이 있는 패턴을 찾습니다.
+        table_match = re.search(r'(\|.*\|(?:\s*\|---[^|\r\n]*\|)+[\s\S]*?)(?=\n\n|\Z)', markdown_text, re.MULTILINE)
+        
+        if not table_match:
+            return None
 
-# 레이아웃 분할: 왼쪽(파일&설정), 오른쪽(결과&계산기)
+        table_string = table_match.group(1).strip()
+        lines = table_string.split('\n')
+        
+        # 헤더 라인과 데이터 라인 추출
+        header_line = lines[0].strip()
+        data_lines = [line.strip() for line in lines if not line.startswith('|---')]
+        
+        # 헤더 추출 (첫 번째 라인)
+        headers = [h.strip() for h in data_lines[0].split('|') if h.strip()]
+        
+        # 데이터 추출 (세 번째 라인부터)
+        data = []
+        for line in data_lines[2:]: # 0:헤더, 1:구분선, 2:첫 데이터
+             if line:
+                row = [d.strip() for d in line.split('|') if d.strip()]
+                if len(row) == len(headers):
+                    data.append(row)
+
+        df = pd.DataFrame(data, columns=headers)
+        return df
+        
+    except Exception as e:
+        st.warning(f"테이블 변환 중 오류 발생: {e}")
+        return None
+
+# --- 6. Streamlit 메인 화면 구성 ---
 col1, col2 = st.columns([1, 1.2])
 
+# Left Column (Upload & Calculator)
 with col1:
     st.header("1️⃣ 문서 업로드")
     document_file = st.file_uploader("고객 문서 (PDF/Image)", type=["pdf", "jpg", "png"])
     
-    # [NEW] 중량 계산기 섹션 
+    # 중량 계산기 섹션 
     st.markdown("---")
     st.header("⚖️ 스마트 중량/원가 계산기")
     st.info("AI 리포트의 '추출 치수'를 보고 입력하세요.")
     
     with st.container(border=True):
-        # 입력 폼
         c1, c2 = st.columns(2)
         with c1:
             od = st.number_input("외경 (OD, mm)", min_value=0.0, value=1000.0)
@@ -138,7 +178,7 @@ with col1:
             qty = st.number_input("수량 (EA)", min_value=1, value=1)
             unit_price = st.number_input("kg당 단가 (원)", min_value=0, value=2500)
 
-        # 자동 계산 로직 (원통형/링형 기준)
+        # 자동 계산 로직
         if od > 0:
             volume = (math.pi * (od**2 - id**2) / 4) * h
             weight_per_ea = (volume * density) / 1000000
@@ -152,41 +192,51 @@ with col1:
         else:
             st.warning("치수를 입력하면 계산됩니다.")
 
+# Right Column (Report)
 with col2:
     st.header("2️⃣ AI 분석 리포트")
+    
+    if 'report_text' not in st.session_state:
+        st.session_state.report_text = ""
     
     if st.button("🚀 문서 분석 시작", use_container_width=True):
         if not document_file:
             st.error("⚠️ 문서를 먼저 업로드해주세요.")
         else:
             document_blob = {"mime_type": document_file.type, "data": document_file.getvalue()}
-            result_text = generate_markdown_report(document_blob)
+            st.session_state.report_text = generate_markdown_report(document_blob)
             
-            if result_text.startswith("Error"):
-                st.error(result_text)
-            else:
-                st.markdown(result_text)
-                st.success("분석 완료! 왼쪽 계산기에 치수를 입력해보세요.")
-                st.code(result_text, language="markdown")
+    # 결과 출력 및 다운로드 버튼 생성
+    if st.session_state.report_text:
+        result_text = st.session_state.report_text
+        
+        if result_text.startswith("Error"):
+            st.error(result_text)
+        else:
+            st.markdown(result_text)
+            st.success("분석 완료!")
+            
+            # [NEW] 엑셀 다운로드 처리
+            df_report = markdown_table_to_df(result_text)
+            if df_report is not None and not df_report.empty:
+                # 엑셀 파일로 변환
+                @st.cache_data
+                def convert_df_to_excel(df):
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df.to_excel(writer, index=False, sheet_name='AI_검토결과')
+                    return output.getvalue()
 
----
-
-## 2. 📄 리포트 형식 다운로드 제안 (PDF/HTML)
-
-가장 공식적이고 휴대하기 편리한 **리포트 형식은 PDF**입니다. 현재 Markdown 텍스트를 PDF로 변환하려면 **`pdfkit`** 또는 **`fpdf2`**와 같은 새로운 Python 라이브러리 설치가 필요합니다.
-
-### 💡 PDF 리포트 다운로드 구현 방안
-
-1.  **PDF/HTML 변환:** Python `pdfkit` (또는 `weasyprint`) 라이브러리를 사용하여 AI가 생성한 Markdown 텍스트를 HTML로 변환하고, 다시 이를 **PDF 파일로 저장**합니다.
-2.  **다운로드 버튼:** Streamlit의 `st.download_button`을 사용하여 생성된 PDF 파일을 사용자에게 제공합니다.
-
-이는 **구체화된 분석 내용**을 **공식적인 문서 형식**으로 보존하는 가장 확실한 방법입니다.
-
-### **후속 업무 제안**
-문서 구체화 코드를 확인하신 후, 리포트 다운로드 기능을 추가하시겠습니까?
-
-**[1] 💾 PDF 리포트 다운로드 기능 추가** (라이브러리 설치 필요)
-**[2] 💬 대화형 챗봇 (Q&A) 모드 추가** (리포트 분석에 집중)
-**[3] 🧠 사내 DB 연동 (RAG) 로드맵 검토**
-
-숫자를 입력해 주시면 즉시 다음 단계를 진행하겠습니다.
+                excel_data = convert_df_to_excel(df_report)
+                
+                st.download_button(
+                    label="💾 Excel (.xlsx) 핵심 데이터 다운로드",
+                    data=excel_data,
+                    file_name=f"수주검토_핵심데이터_{time.strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            
+            st.markdown("---")
+            st.subheader("📝 전체 결과 (Copyable Text)")
+            st.code(result_text, language="markdown")
