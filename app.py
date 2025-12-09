@@ -10,7 +10,7 @@ import io
 
 # --- 1. 앱 기본 설정 ---
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (출하 점검표 추가)")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (안정화)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -21,8 +21,8 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
 **[사용 방법]**
-* 고객 문서를 업로드하면, AI가 핵심 검토 항목을 분석합니다.
-* **핵심 물성치 및 출하 전 최종 점검표를 자동으로 생성**하여 실무 효율을 극대화합니다.
+* **출하 점검표**의 구조를 간소화하여 **연결 안정성**을 확보했습니다.
+* 핵심 물성치 추출 및 검토 항목 분석 기능은 유지됩니다.
 """)
 
 # --- 2. [핵심] 작동하는 모델 자동 탐색 (1.5 및 2.5 계열 통합) ---
@@ -35,10 +35,9 @@ def get_working_model():
         api_key = st.secrets["GOOGLE_API_KEY"]
         genai.configure(api_key=api_key)
     except Exception as e:
-        # st.error(f"API Key 설정 오류: {e}")
         return None, "API Key Error"
 
-    # 모델 후보 목록을 2.5, 1.5 Flash, 1.5 Pro, Pro 순으로 시도 (안정성 확보)
+    # 모델 후보 목록을 2.5, 1.5 Flash, 1.5 Pro, Pro 순으로 시도
     candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'] 
     
     st.info(f"AI 모델 연결 시도 중... 후보 모델: {', '.join(candidates)}")
@@ -51,12 +50,11 @@ def get_working_model():
             st.success(f"✅ AI 모델 연결 성공: {model_name}")
             return model, model_name
         except Exception as e:
-            # st.warning(f"모델 {model_name} 연결 실패: {e}")
             continue
             
     return None, "No Working Model Found"
 
-# --- 3. Markdown 리포트 생성 함수 (물성치 추출 및 출하 점검표 추가) ---
+# --- 3. Markdown 리포트 생성 함수 (물성치 추출 및 간소화된 출하 점검표 추가) ---
 def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
@@ -66,7 +64,7 @@ def generate_markdown_report(document_blob):
     # System Instruction: Markdown Checklist 출력 강제
     prompt = f"""
     당신은 (주)태웅의 **영업 수주 기술 검토 및 출하 전문가**입니다.
-    업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 핵심 검토 항목 및 **최종 출하 점검표**를 **반드시 아래 마크다운 형식으로만** 출력하십시오.
+    업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 핵심 검토 항목 및 **최종 출하 점검 목록**을 **반드시 아래 마크다운 형식으로만** 출력하십시오.
 
     [검토 항목 및 지침]
     1. 재질 적합성: 요구 물성치(**항복 강도, 인장 강도, 샤르피 충격 에너지, 시험 온도 등 정량적 수치**)를 추출하고 투입 재질의 적합성 판단 (PASS/FAIL/WARNING 중 하나로 명시).
@@ -91,13 +89,11 @@ def generate_markdown_report(document_blob):
 
     ---
     
-    ## 📦 출하 전 최종 점검표 (Pre-Shipment Checklist)
-    | 점검 항목 | AI 판단 근거 (문서 기준) | 담당자 최종 확인 (O/X) |
-    |:---|:---|:---|
-    | 최종 검사(Final Inspection) 결과 승인 여부 | [승인된 검사 보고서 번호 또는 시방서 요구사항] | [O/X] |
-    | 출하 마킹 및 태그 부착 완료 여부 (Spec. 준수) | [요구 마킹 코드 및 방식 (예: 고객 로고, Heat No.)] | [O/X] |
-    | 포장 기준 충족 여부 (방청 및 ISPM-15 등) | [요구되는 포장 사양 및 방청 방법] | [O/X] |
-    | 선적 서류(MTC, CoC, Packing List) 준비 완료 여부 | [요구된 필수 서류 목록] | [O/X] |
+    ## 📦 출하 전 최종 점검 목록 (Simple Checklist)
+    * 최종 검사(Final Inspection) 승인 서류 번호: [AI가 추출한 서류 번호 또는 요구사항 명시]
+    * 출하 마킹 및 태그 요구사항: [요구 마킹 코드 및 방식]
+    * 포장 및 방청 사양: [요구되는 포장 및 방청 방법]
+    * 필수 선적 서류 목록: [MTC, CoC, Packing List 등 요구된 필수 서류 목록]
     """
     
     with st.spinner(f"AI({model_name})가 고객 문서를 분석 중입니다..."):
