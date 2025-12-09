@@ -8,9 +8,8 @@ from PIL import Image
 import io 
 
 # --- 1. 앱 기본 설정 ---
-# [수정] set_page_config는 스크립트 최상단에 한 번만 있어야 합니다.
 st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (최종 확장)")
+st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (모델명 정밀 타격)")
 
 # [진단용] 현재 상태 표시
 try:
@@ -21,14 +20,13 @@ st.caption(f"System Status: google-generativeai v{current_version}")
 
 st.markdown("""
 **[사용 방법]**
-* **기능 확장:** 기존 검토 항목에 **'출하 전 최종 점검표'**가 추가되었습니다.
-* **안정성 강화:** 연산 시간을 충분히 확보하여 끊김 현상을 방지했습니다.
+* **모델 연결 복구:** 404 오류를 방지하기 위해 모델 명칭을 구체적인 버전(latest, 001)으로 변경했습니다.
+* **출하 점검표:** 안정적인 생성을 위해 간소화된 목록 형식을 유지합니다.
 """)
 
-# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
+# --- 2. [핵심] 작동하는 모델 자동 탐색 (버전 명시) ---
 def get_working_model():
     try:
-        # [중요] secrets.toml에 GOOGLE_API_KEY가 있는지 확인
         if "GOOGLE_API_KEY" not in st.secrets:
             st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY가 없습니다.")
             return None, "API Key Missing"
@@ -38,16 +36,29 @@ def get_working_model():
     except:
         return None, "API Key Error"
 
-    # [모델 순서 최적화] 속도와 성능 균형이 좋은 1.5 Flash를 최우선으로 설정
-    candidates = ['gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-pro']
+    # [수정] 404 오류 방지를 위해 구체적인 버전명을 우선 시도합니다.
+    # gemini-2.5는 아직 정식 배포 전일 수 있으므로 제거하고 1.5 계열에 집중합니다.
+    candidates = [
+        'gemini-1.5-flash-latest', # 최신 별칭
+        'gemini-1.5-flash-001',    # 고정 버전
+        'gemini-1.5-flash',        # 일반 별칭
+        'gemini-1.5-pro-latest',   
+        'gemini-1.5-pro-001',
+        'gemini-pro'               # 최후의 수단 (1.0 버전)
+    ]
+    
+    # st.info(f"AI 모델 연결 시도 중... (후보: {len(candidates)}개)")
     
     for model_name in candidates:
         try:
             model = genai.GenerativeModel(model_name)
-            # [수정] Time-out을 명시하지 않거나 충분히(30초 이상) 주어야 긴 리포트 생성 시 끊기지 않습니다.
-            # 기본 코드가 잘 된 이유는 타임아웃 제한이 없었기 때문입니다. 여기서도 제한을 풉니다.
+            # 타임아웃 없이 간단한 테스트
+            model.generate_content("test")
+            st.success(f"✅ AI 모델 연결 성공: {model_name}")
             return model, model_name
-        except:
+        except Exception as e:
+            # 실패한 모델은 조용히 넘어가고 다음 후보를 시도
+            # st.warning(f"{model_name} 연결 실패.. 다음 시도")
             continue
             
     return None, "No Working Model Found"
@@ -57,9 +68,9 @@ def generate_markdown_report(document_blob):
     model, model_name = get_working_model()
     
     if not model:
-        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다. ({model_name})"
+        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다. (모든 후보 실패)"
 
-    # [프롬프트 확장] 출하 점검표(Pre-Shipment Checklist) 추가
+    # [프롬프트] 출하 점검표(Pre-Shipment Checklist) 포함
     prompt = """
     당신은 (주)태웅의 **영업 수주 기술 검토 및 출하 전문가**입니다.
     업로드된 고객 서류(계약서, 시방서, 도면)를 면밀히 분석하여, 다음 5가지 항목에 대한 결과를 **반드시 아래 마크다운 체크리스트 형식으로만** 출력하십시오.
@@ -95,9 +106,9 @@ def generate_markdown_report(document_blob):
     - **라우팅 제안:** [다음 공정 순서 초안 제안]
     """
     
-    with st.spinner(f"AI({model_name})가 문서를 상세 분석 중입니다... (내용이 많아 시간이 걸릴 수 있습니다)"):
+    with st.spinner(f"AI({model_name})가 문서를 상세 분석 중입니다..."):
         try:
-            # [핵심 수정] 타임아웃을 설정하지 않음으로써 AI가 충분히 생각할 시간을 줍니다.
+            # 타임아웃 제한 해제
             response = model.generate_content(
                 contents=[prompt, document_blob]
             )
@@ -107,7 +118,6 @@ def generate_markdown_report(document_blob):
             return f"Error: 분석 중 오류 발생: {str(e)}"
 
 # --- 4. Streamlit 메인 화면 ---
-# [수정] set_page_config 중복 제거됨
 
 # 파일 업로더
 document_file = st.file_uploader(
@@ -153,4 +163,4 @@ if st.button("🚀 수주 검토 시작 및 리포트 생성", use_container_wid
                 st.success("분석 완료!")
                 
                 st.subheader("📝 전체 결과 복사 (Copyable Text)")
-                st.code(result_text, language="markdown") # Markdown 코드 블록으로 복사 용이하게 출력
+                st.code(result_text, language="markdown")
