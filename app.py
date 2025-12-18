@@ -1,31 +1,45 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  FileText, 
-  Upload, 
-  Calculator, 
-  AlertCircle, 
-  CheckCircle2, 
-  Loader2, 
-  Info, 
-  Copy,
-  Box,
-  Truck,
-  Settings,
-  Scale,
-  FileSpreadsheet,
-  File,
-  Coins,
-  BarChart3,
-  ClipboardList,
-  Triangle,
-  Ruler,
-  AlertTriangle
-} from 'lucide-react';
+import streamlit as st
+import google.generativeai as genai
+import math
+import PIL.Image
+import io
 
-// --- API 설정 및 상수 ---
-const API_KEY = ""; // 실행 환경에서 자동으로 주입됩니다.
-const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
-const SYSTEM_PROMPT = `당신은 (주)태웅의 글로벌 스펙 기술 검토, 공정, 물류 및 형상 분석 전문가입니다. 
+# --- 1. 앱 기본 설정 ---
+st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
+
+# 스타일 설정 (Lucide 아이콘 대신 이모지 사용 및 UI 정돈)
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f8fafc;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 12px;
+        height: 3em;
+        background-color: #2563eb;
+        color: white;
+        font-weight: bold;
+    }
+    .stNumberInput>div>div>input {
+        border-radius: 8px;
+    }
+    .report-container {
+        background-color: white;
+        padding: 2rem;
+        border-radius: 16px;
+        border: 1px solid #e2e8f0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. AI 설정 ---
+# API 키는 환경 변수나 Streamlit secrets에서 가져옵니다.
+API_KEY = "" # 실제 운영 환경에서는 st.secrets["GOOGLE_API_KEY"] 등을 사용하세요.
+genai.configure(api_key=API_KEY)
+GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-09-2025"
+
+SYSTEM_PROMPT = """당신은 (주)태웅의 글로벌 스펙 기술 검토, 공정, 물류 및 형상 분석 전문가입니다. 
 업로드된 도면/문서/엑셀 파일을 분석하고, 아래 지침에 따라 결과를 출력하십시오.
 
 [참조용 국제 표준 규격 데이터베이스]
@@ -39,380 +53,101 @@ const SYSTEM_PROMPT = `당신은 (주)태웅의 글로벌 스펙 기술 검토, 
 3. 규격 대조: 고객 요구 물성치가 국제 표준을 만족하는지 판단.
 4. 치수 추출: 핵심 치수(OD, ID, H) 및 수량 추출.
 5. 물류 및 출하: INCOTERMS, 포장 방식, 방청 요구사항 추출.
-6. 공정 코멘트: 단조, 열처리, 절단 시 형상적 특성에 따른 위험 요소 작성.`;
+6. 공정 코멘트: 단조, 열처리, 절단 시 형상적 특성에 따른 위험 요소 작성."""
 
-// --- 유틸리티 함수 ---
-const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
-  try {
-    const response = await fetch(url, options);
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    return await response.json();
-  } catch (error) {
-    if (retries > 0) {
-      await new Promise(resolve => setTimeout(resolve, backoff));
-      return fetchWithRetry(url, options, retries - 1, backoff * 2);
-    }
-    throw error;
-  }
-};
+# --- 3. 메인 로직 ---
+def main():
+    st.title("📄 AI 고객 스펙 검토 및 라우팅 지원")
+    st.caption("도면, 문서 및 엑셀 기반 기술 검토 통합 플랫폼")
 
-const fileToBase64 = (file) => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = (error) => reject(error);
-  });
-};
+    col1, col2 = st.columns([1, 1.2], gap="large")
 
-// --- 메인 컴포넌트 ---
-export default function App() {
-  const [file, setFile] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null);
-  const [analysisResult, setAnalysisResult] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
+    with col1:
+        st.subheader("1️⃣ 문서 업로드")
+        uploaded_file = st.file_uploader(
+            "이미지, PDF, 엑셀 파일을 업로드하세요", 
+            type=["png", "jpg", "jpeg", "pdf", "xlsx", "xls"]
+        )
 
-  // 계산기 상태
-  const [calc, setCalc] = useState({
-    od: 1000,
-    id: 0,
-    h: 500,
-    density: 7.85,
-    qty: 1,
-    unitPrice: 2500
-  });
+        if uploaded_file:
+            if uploaded_file.type.startswith("image/"):
+                st.image(uploaded_file, caption="업로드된 도면 미리보기", use_container_width=True)
+            else:
+                st.info(f"업로드된 파일: {uploaded_file.name}")
 
-  // 계산 결과 파생 변수
-  const results = useMemo(() => {
-    const { od, id, h, density, qty, unitPrice } = calc;
-    if (od <= 0 || h <= 0) return null;
-    
-    const volume = (Math.PI * (Math.pow(od, 2) - Math.pow(id, 2)) / 4) * h;
-    const weightPerEa = (volume * density) / 1000000;
-    const totalWeight = weightPerEa * qty;
-    const totalCost = totalWeight * unitPrice;
+        if st.button("🚀 분석 시작"):
+            if not uploaded_file:
+                st.error("분석할 파일을 먼저 업로드해 주세요.")
+            else:
+                with st.spinner("AI가 파일을 정밀 분석 중입니다..."):
+                    try:
+                        model = genai.GenerativeModel(
+                            model_name=GEMINI_MODEL_NAME,
+                            system_instruction=SYSTEM_PROMPT
+                        )
+                        
+                        # 파일 데이터 처리
+                        file_bytes = uploaded_file.read()
+                        content = [
+                            "이 도면, 문서 또는 엑셀 파일을 분석하여 기술 검토 리포트를 작성해 주세요.",
+                            {"mime_type": uploaded_file.type if uploaded_file.type else "application/octet-stream", "data": file_bytes}
+                        ]
+                        
+                        response = model.generate_content(content)
+                        st.session_state['analysis_result'] = response.text
+                    except Exception as e:
+                        st.error(f"분석 중 오류가 발생했습니다: {str(e)}")
 
-    return {
-      weightPerEa,
-      totalWeight,
-      totalCost
-    };
-  }, [calc]);
+        st.divider()
+        st.subheader("⚖️ 스마트 중량/원가 계산기")
+        
+        with st.expander("계산기 입력 (AI 리포트 참조)", expanded=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                od = st.number_input("외경 (OD, mm)", value=1000.0)
+                h = st.number_input("높이 (H, mm)", value=500.0)
+                density = st.number_input("비중 (Density)", value=7.85)
+            with c2:
+                id_val = st.number_input("내경 (ID, mm)", value=0.0)
+                qty = st.number_input("수량 (EA)", value=1, min_value=1)
+                unit_price = st.number_input("kg당 단가 (원)", value=2500)
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      if (selectedFile.type.startsWith('image/')) {
-        setPreviewUrl(URL.createObjectURL(selectedFile));
-      } else {
-        setPreviewUrl(null); 
-      }
-      setError(null);
-    }
-  };
+            if od > 0 and h > 0:
+                volume = (math.pi * (od**2 - id_val**2) / 4) * h
+                weight_per_ea = (volume * density) / 1000000
+                total_weight = weight_per_ea * qty
+                total_cost = total_weight * unit_price
 
-  const isExcel = (file) => {
-    return file && (
-      file.name.endsWith('.xlsx') || 
-      file.name.endsWith('.xls') || 
-      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.type === 'application/vnd.ms-excel'
-    );
-  };
+                st.markdown(f"""
+                <div style="background-color: #1e293b; padding: 1.5rem; border-radius: 12px; color: white;">
+                    <p style="margin:0; font-size: 0.8rem; color: #94a3b8;">개당 중량</p>
+                    <p style="margin:0; font-size: 1.2rem; font-weight: bold;">{weight_per_ea:,.1f} kg</p>
+                    <hr style="border-color: #334155; margin: 0.5rem 0;">
+                    <p style="margin:0; font-size: 0.8rem; color: #94a3b8;">총 중량 ({qty}EA)</p>
+                    <p style="margin:0; font-size: 1.2rem; font-weight: bold;">{total_weight:,.1f} kg</p>
+                    <hr style="border-color: #334155; margin: 0.5rem 0;">
+                    <p style="margin:0; font-size: 0.8rem; color: #fb923c;">예상 소재비</p>
+                    <p style="margin:0; font-size: 1.5rem; font-weight: 900; color: #fb923c;">{int(total_cost):,} 원</p>
+                </div>
+                """, unsafe_allow_html=True)
 
-  const handleAnalyze = async () => {
-    if (!file) {
-      setError("분석할 파일을 먼저 업로드해 주세요.");
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const base64Data = await fileToBase64(file);
-      const payload = {
-        contents: [{
-          parts: [
-            { text: "이 도면, 문서 또는 엑셀 파일을 분석하여 기술 검토 리포트를 작성해 주세요." },
-            { inlineData: { mimeType: file.type || "application/octet-stream", data: base64Data } }
-          ]
-        }],
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }
-      };
-
-      const result = await fetchWithRetry(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }
-      );
-
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        setAnalysisResult(text);
-      } else {
-        throw new Error("분석 결과를 가져오지 못했습니다.");
-      }
-    } catch (err) {
-      setError(`분석 중 오류가 발생했습니다: ${err.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const copyToClipboard = () => {
-    const textArea = document.createElement("textarea");
-    textArea.value = analysisResult;
-    document.body.appendChild(textArea);
-    textArea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textArea);
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans p-4 md:p-8">
-      {/* Header */}
-      <header className="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-slate-800 flex items-center gap-3">
-            <FileText className="text-blue-600 w-8 h-8" />
-            AI 고객 스펙 검토 및 라우팅 지원
-          </h1>
-          <p className="text-slate-500 mt-1">도면, 문서 및 엑셀 기반 기술 검토 통합 플랫폼</p>
-        </div>
-        <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-          <span className="text-sm font-medium text-slate-600">AI 모델: {GEMINI_MODEL}</span>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: Upload & Calculator */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Upload Section */}
-          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-blue-500" />
-              1. 문서 업로드 (이미지/PDF/엑셀)
-            </h2>
-            <div className={`relative border-2 border-dashed rounded-xl p-8 transition-colors ${file ? 'border-blue-200 bg-blue-50' : 'border-slate-200 hover:border-blue-400'}`}>
-              <input 
-                type="file" 
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
-                onChange={handleFileChange}
-                accept="image/*,application/pdf,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-              />
-              <div className="text-center">
-                {file ? (
-                  <div className="space-y-3">
-                    {previewUrl ? (
-                      <img src={previewUrl} alt="Preview" className="max-h-48 mx-auto rounded-lg shadow-sm" />
-                    ) : isExcel(file) ? (
-                      <div className="flex flex-col items-center">
-                        <FileSpreadsheet className="w-16 h-16 mx-auto text-green-600" />
-                        <span className="inline-block mt-2 px-2 py-1 bg-green-100 text-green-700 text-xs font-bold rounded">EXCEL</span>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center">
-                        <FileText className="w-16 h-16 mx-auto text-blue-400" />
-                        <span className="inline-block mt-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded">PDF/DOC</span>
-                      </div>
-                    )}
-                    <p className="text-sm font-medium text-slate-700 truncate max-w-xs mx-auto">{file.name}</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="bg-blue-100 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
-                      <Upload className="text-blue-600" />
-                    </div>
-                    <p className="text-slate-600 font-medium">클릭 또는 드래그하여 파일 업로드</p>
-                    <p className="text-slate-400 text-xs mt-1">이미지, PDF, 엑셀(.xlsx, .xls) 지원</p>
-                  </>
-                )}
-              </div>
+    with col2:
+        st.subheader("2️⃣ AI 분석 리포트")
+        if 'analysis_result' in st.session_state:
+            st.markdown(f"""
+            <div class="report-container">
+                {st.session_state['analysis_result']}
             </div>
-            <button
-              onClick={handleAnalyze}
-              disabled={isLoading || !file}
-              className={`w-full mt-4 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
-                isLoading || !file 
-                ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
-                : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-lg shadow-blue-200'
-              }`}
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  파일 분석 중...
-                </>
-              ) : (
-                <>
-                  <Settings className="w-5 h-5" />
-                  분석 시작
-                </>
-              )}
-            </button>
-            {error && (
-              <div className="mt-3 p-3 bg-red-50 border border-red-100 text-red-600 rounded-lg text-sm flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                {error}
-              </div>
-            )}
-          </section>
+            """, unsafe_allow_html=True)
+            
+            if st.button("📋 결과 복사 (Markdown)"):
+                st.info("텍스트를 드래그하여 복사해 주세요.")
+                st.code(st.session_state['analysis_result'], language="markdown")
+        else:
+            st.info("파일을 분석하면 결과가 여기에 표시됩니다.")
 
-          {/* Calculator Section */}
-          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Calculator className="w-5 h-5 text-indigo-500" />
-              스마트 중량/원가 계산기
-            </h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">외경 (OD, mm)</label>
-                <input 
-                  type="number" 
-                  value={calc.od} 
-                  onChange={(e) => setCalc({...calc, od: parseFloat(e.target.value) || 0})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">내경 (ID, mm)</label>
-                <input 
-                  type="number" 
-                  value={calc.id} 
-                  onChange={(e) => setCalc({...calc, id: parseFloat(e.target.value) || 0})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">높이 (H, mm)</label>
-                <input 
-                  type="number" 
-                  value={calc.h} 
-                  onChange={(e) => setCalc({...calc, h: parseFloat(e.target.value) || 0})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">비중 (Density)</label>
-                <input 
-                  type="number" 
-                  value={calc.density} 
-                  onChange={(e) => setCalc({...calc, density: parseFloat(e.target.value) || 0})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">수량 (EA)</label>
-                <input 
-                  type="number" 
-                  value={calc.qty} 
-                  onChange={(e) => setCalc({...calc, qty: parseInt(e.target.value) || 1})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">kg당 단가 (원)</label>
-                <input 
-                  type="number" 
-                  value={calc.unitPrice} 
-                  onChange={(e) => setCalc({...calc, unitPrice: parseInt(e.target.value) || 0})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
-            </div>
+    st.markdown("---")
+    st.caption("© 2024 (주)태웅 - AI 기반 영업 수주 검토 지원 시스템")
 
-            {results && (
-              <div className="mt-6 p-4 rounded-xl bg-slate-900 text-white space-y-3">
-                <div className="flex justify-between items-center border-b border-slate-700 pb-2">
-                  <span className="text-slate-400 text-sm flex items-center gap-2"><Scale className="w-4 h-4" /> 개당 중량</span>
-                  <span className="font-bold text-lg">{results.weightPerEa.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg</span>
-                </div>
-                <div className="flex justify-between items-center border-b border-slate-700 pb-2">
-                  <span className="text-slate-400 text-sm flex items-center gap-2"><Box className="w-4 h-4" /> 총 중량 ({calc.qty}EA)</span>
-                  <span className="font-bold text-lg">{results.totalWeight.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg</span>
-                </div>
-                <div className="flex justify-between items-center text-orange-400">
-                  <span className="text-sm font-semibold uppercase tracking-tighter flex items-center gap-2"><Coins className="w-4 h-4" /> 총 예상 소재비</span>
-                  <span className="font-black text-xl">{Math.floor(results.totalCost).toLocaleString()} 원</span>
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
-
-        {/* Right Column: AI Analysis Report */}
-        <div className="lg:col-span-7">
-          <section className="bg-white h-full rounded-2xl shadow-sm border border-slate-200 flex flex-col min-h-[600px]">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-green-500" />
-                2. AI 분석 리포트
-              </h2>
-              {analysisResult && (
-                <button 
-                  onClick={copyToClipboard}
-                  className="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 flex items-center gap-1 text-sm"
-                  title="결과 복사"
-                >
-                  <Copy className="w-4 h-4" /> 복사
-                </button>
-              )}
-            </div>
-
-            <div className="flex-1 p-6 overflow-y-auto">
-              {isLoading ? (
-                <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4">
-                  <div className="relative">
-                    <Loader2 className="w-12 h-12 animate-spin text-blue-500" />
-                    <Settings className="w-6 h-6 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-blue-200" />
-                  </div>
-                  <div className="text-center">
-                    <p className="font-medium text-slate-600">AI가 파일을 정밀 분석 중입니다...</p>
-                    <p className="text-sm">데이터 및 형상 정보를 대조하고 있습니다.</p>
-                  </div>
-                </div>
-              ) : analysisResult ? (
-                <div className="prose prose-slate max-w-none prose-headings:font-bold prose-h2:text-xl prose-h3:text-lg prose-table:border prose-table:rounded-xl prose-th:bg-slate-50 prose-th:p-2 prose-td:p-2 prose-td:border-t">
-                  <div className="whitespace-pre-wrap text-slate-700 leading-relaxed font-mono text-sm bg-slate-50 p-4 rounded-xl border border-slate-100">
-                    {analysisResult}
-                  </div>
-                </div>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-3 border-2 border-dashed border-slate-100 rounded-xl">
-                  <Info className="w-12 h-12" />
-                  <p className="font-medium">파일을 분석하면 결과가 여기에 표시됩니다.</p>
-                </div>
-              )}
-            </div>
-
-            {analysisResult && (
-              <div className="p-4 bg-blue-50 border-t border-blue-100 rounded-b-2xl">
-                <div className="flex items-center gap-2 text-blue-700 text-sm">
-                  <Info className="w-4 h-4" />
-                  <span>추출된 정보를 확인한 후 왼쪽 계산기에 입력하여 검토를 완료하세요.</span>
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
-      </main>
-
-      {/* Footer Info */}
-      <footer className="max-w-7xl mx-auto mt-8 text-center text-slate-400 text-xs">
-        <div className="flex items-center justify-center gap-6 mb-4">
-          <div className="flex items-center gap-1"><Scale className="w-3 h-3" /> 중량 자동화</div>
-          <div className="flex items-center gap-1"><Truck className="w-3 h-3" /> 물류 조건 추출</div>
-          <div className="flex items-center gap-1"><FileSpreadsheet className="w-3 h-3" /> 데이터 분석</div>
-        </div>
-        &copy; 2024 (주)태웅 - AI 기반 영업 수주 검토 지원 시스템
-      </footer>
-    </div>
-  );
-}
+if __name__ == "__main__":
+    main()
