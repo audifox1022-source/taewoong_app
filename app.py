@@ -1,189 +1,412 @@
-import streamlit as st
-import google.generativeai as genai
-import json 
-import os
-import importlib.metadata
-import time
-from PIL import Image 
-import io 
-import base64
-import math 
-# 엑셀 관련 라이브러리(pandas, xlsxwriter, re)는 삭제된 상태 유지
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  FileText, 
+  Upload, 
+  Calculator, 
+  AlertCircle, 
+  CheckCircle2, 
+  Loader2, 
+  Info, 
+  Copy,
+  Box,
+  Truck,
+  Settings,
+  Scale,
+  FileSpreadsheet,
+  File
+} from 'lucide-react';
 
-# --- 1. 앱 기본 설정 ---
-st.set_page_config(page_title="영업부 수주 검토 지원 앱", layout="wide")
-st.title("📄 AI 고객 스펙 검토 및 라우팅 지원 앱 (형상 분석 통합)")
+// --- API 설정 및 상수 ---
+const API_KEY = ""; // 환경에서 자동 주입됨
+const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
+const SYSTEM_PROMPT = `당신은 (주)태웅의 글로벌 스펙 기술 검토, 공정, 물류 및 형상 분석 전문가입니다. 
+업로드된 도면/문서/엑셀 파일을 분석하고, 아래 지침에 따라 결과를 출력하십시오.
 
-# [진단용] 현재 상태 표시
-try:
-    current_version = importlib.metadata.version("google-generativeai")
-except:
-    current_version = "Unknown"
-st.caption(f"System Status: google-generativeai v{current_version}")
-
-st.markdown("""
-**[최종 업그레이드 기능]**
-* **🔺 형상 분석 및 추론:** 도면을 분석하여 제품의 3D 형상과 주요 지오메트리 특징을 설명합니다.
-* **추적성, 중량/원가 계산기, 공정 코멘트, 출하/포장** 기능 유지.
-""")
-
-# --- 2. [핵심] 작동하는 모델 자동 탐색 ---
-def get_working_model():
-    try:
-        if "GOOGLE_API_KEY" not in st.secrets:
-            st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY가 없습니다.")
-            return None, "API Key Missing"
-            
-        api_key = st.secrets["GOOGLE_API_KEY"]
-        genai.configure(api_key=api_key)
-    except:
-        return None, "API Key Error"
-
-    candidates = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-    
-    for model_name in candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            return model, model_name
-        except:
-            continue
-            
-    return None, "No Working Model Found"
-
-# --- 3. 글로벌 규격 데이터베이스 (Mini-DB) ---
-STANDARD_SPECS_DB = """
-[참조용 국제 표준 규격 데이터베이스 (Reference Standards)]
+[참조용 국제 표준 규격 데이터베이스]
 1. ASME / ASTM: SA-105, SA-350 LF2, SA-182 F316
 2. EN: P250GH, P355NH
 3. JIS/KS: SF440A, SCM440
-(상세 물성치 생략 - AI는 내부 지식 활용 가능)
-"""
 
-# --- 4. Markdown 리포트 생성 함수 (형상 분석 통합) ---
-def generate_markdown_report(document_blob):
-    model, model_name = get_working_model()
+[검토 및 출력 지침]
+1. 문서 식별: 문서 번호(Doc No.)와 개정 번호(Rev. No.) 필수 추출.
+2. 형상 분석: 제품 형상 추론(예: 플랜지 샤프트, 링 등) 및 기하학적 특징 설명. (엑셀의 경우 데이터 시트의 치수 정보를 기반으로 형상 유추)
+3. 규격 대조: 고객 요구 물성치가 국제 표준을 만족하는지 판단.
+4. 치수 추출: 핵심 치수(OD, ID, H) 및 수량 추출.
+5. 물류 및 출하: INCOTERMS, 포장 방식, 방청 요구사항 추출.
+6. 공정 코멘트: 단조, 열처리, 절단 시 형상적 특성에 따른 위험 요소 작성.`;
+
+// --- 유틸리티 함수 ---
+const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
+  try {
+    const response = await fetch(url, options);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    if (retries > 0) {
+      await new Promise(resolve => setTimeout(resolve, backoff));
+      return fetchWithRetry(url, options, retries - 1, backoff * 2);
+    }
+    throw error;
+  }
+};
+
+const fileToBase64 = (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = (error) => reject(error);
+  });
+};
+
+// --- 메인 컴포넌트 ---
+export default function App() {
+  const [file, setFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  // 계산기 상태
+  const [calc, setCalc] = useState({
+    od: 1000,
+    id: 0,
+    h: 500,
+    density: 7.85,
+    qty: 1,
+    unitPrice: 2500
+  });
+
+  // 계산 결과 파생 변수
+  const results = useMemo(() => {
+    const { od, id, h, density, qty, unitPrice } = calc;
+    if (od <= 0 || h <= 0) return null;
     
-    if not model:
-        return f"Error: 사용 가능한 AI 모델을 찾을 수 없습니다."
+    const volume = (Math.PI * (Math.pow(od, 2) - Math.pow(id, 2)) / 4) * h;
+    const weightPerEa = (volume * density) / 1000000;
+    const totalWeight = weightPerEa * qty;
+    const totalCost = totalWeight * unitPrice;
 
-    # [프롬프트 강화] 형상 분석 및 지오메트리 추출 의무화
-    prompt = f"""
-    당신은 (주)태웅의 **글로벌 스펙 기술 검토, 공정, 물류 및 형상 분석 전문가**입니다.
-    업로드된 도면/문서를 분석하고, 아래 지침에 따라 결과를 출력하십시오.
+    return {
+      weightPerEa,
+      totalWeight,
+      totalCost
+    };
+  }, [calc]);
 
-    {STANDARD_SPECS_DB}
+  const handleFileChange = (e) => {
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      if (selectedFile.type.startsWith('image/')) {
+        setPreviewUrl(URL.createObjectURL(selectedFile));
+      } else {
+        setPreviewUrl(null); // PDF나 Excel은 이미지 미리보기가 불가하므로 아이콘으로 대체
+      }
+      setError(null);
+    }
+  };
 
-    [검토 및 출력 지침]
-    1. **문서 식별:** 분석된 정보의 출처 **문서 번호(Doc No.)와 개정 번호(Rev. No.)**를 필수로 추출하십시오.
-    2. **형상 분석:** 도면의 2D 뷰를 기반으로 **추론된 제품 형상(예: 플랜지 샤프트, 링, 밸브 바디 등)**을 설명하고, 주요 기하학적 특징(예: 필렛 R5, 챔퍼 C1.5, 테이퍼 각도)을 추출하십시오.
-    3. **규격 대조:** 고객 요구 물성치가 국제 표준값(Min/Max)을 만족하는지 판단하십시오.
-    4. **치수 추출:** 계산기 입력을 위해 제품의 핵심 치수(OD, ID, H)를 명확히 찾아주십시오.
-    5. **물류 및 출하 조건:** **INCOTERMS, 포장 방식, 방청 요구사항**을 필수적으로 추출하십시오.
-    6. **주요 공정 품질 코멘트:** 단조, 열처리, 절단 작업 시 **형상적 특성을 고려**하여 위험 요소를 작성하십시오.
+  const isExcel = (file) => {
+    return file && (
+      file.name.endsWith('.xlsx') || 
+      file.name.endsWith('.xls') || 
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.type === 'application/vnd.ms-excel'
+    );
+  };
 
-    [출력 포맷]
-    ## 📋 글로벌 표준 규격 대조 및 기술 검토
+  const handleAnalyze = async () => {
+    if (!file) {
+      setError("분석할 파일을 먼저 업로드해 주세요.");
+      return;
+    }
 
-    | 항목 | 고객 문서 요구값 (추출) | 문서 참조 (Doc Ref) | 판정 (PASS/FAIL/WARNING) |
-    |:---|:---|:---|:---|
-    | **문서 번호/개정** | [Doc No: XXX-YYY] | [Rev: A] | - |
-    | **재질/Grade** | [예: SA-105] | [Spec Page 3] | - |
-    | **항복강도** | [값] | [Spec Sec 4.1] | [판정] |
-    | **충격시험** | [값] | [Drawing Note 5] | [판정] |
+    setIsLoading(true);
+    setError(null);
 
-    ---
-    ### 🔺 형상 및 주요 지오메트리 분석
-    * **추론된 제품 형상:** [예: 외경이 큰 링 플랜지 형태이며, 한쪽 면에 8개의 볼트 구멍이 있다.]
-    * **주요 특징:** [예: 모든 모서리에 R3 필렛 적용, 표면 거칠기 N8 요구]
-    * **특이사항/제조 난이도 코멘트:** [예: 비대칭 형상으로 단조 시 편심 발생 위험 높음.]
-    
-    ### 📦 출하 및 물류 필수 검토 사항
-    * **INCOTERMS (2020 기준):** [예: FOB Busan, Incoterms 2020]
-    * **포장 방식:** [예: 밀폐형 목상자, 파렛트 포장]
+    try {
+      const base64Data = await fileToBase64(file);
+      const payload = {
+        contents: [{
+          parts: [
+            { text: "이 도면, 문서 또는 엑셀 파일을 분석하여 기술 검토 리포트를 작성해 주세요." },
+            { inlineData: { mimeType: file.type || "application/octet-stream", data: base64Data } }
+          ]
+        }],
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }
+      };
 
-    ### 🚨 주요 공정별 위험 및 품질 코멘트
-    * **단조(Forging):** [코멘트]
-    * **열처리(Heat Treatment):** [코멘트]
+      const result = await fetchWithRetry(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }
+      );
 
-    ### 📏 견적용 추출 치수 (계산기 입력용)
-    * **외경 (OD):** [   ] mm
-    * **내경 (ID):** [   ] mm
-    * **높이 (H):** [   ] mm
-    * **수량 (Q'ty):** [   ] EA
-    """
-    
-    with st.spinner(f"AI({model_name})가 문서를 분석 중입니다..."):
-        try:
-            response = model.generate_content(
-                contents=[prompt, document_blob]
-            )
-            return response.text
-            
-        except Exception as e:
-            return f"Error: 분석 중 오류 발생: {str(e)}"
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) {
+        setAnalysisResult(text);
+      } else {
+        throw new Error("분석 결과를 가져오지 못했습니다.");
+      }
+    } catch (err) {
+      setError(`분석 중 오류가 발생했습니다: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-# --- 5. Streamlit 메인 화면 구성 ---
-col1, col2 = st.columns([1, 1.2])
+  const copyToClipboard = () => {
+    const textArea = document.createElement("textarea");
+    textArea.value = analysisResult;
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textArea);
+  };
 
-# Left Column (Upload & Calculator)
-with col1:
-    st.header("1️⃣ 문서 업로드")
-    document_file = st.file_uploader("고객 문서 (PDF/Image)", type=["pdf", "jpg", "png"])
-    
-    # 중량 계산기 섹션 
-    st.markdown("---")
-    st.header("⚖️ 스마트 중량/원가 계산기")
-    st.info("AI 리포트의 '추출 치수'를 보고 입력하세요.")
-    
-    with st.container(border=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            od = st.number_input("외경 (OD, mm)", min_value=0.0, value=1000.0)
-            h = st.number_input("높이/길이 (H, mm)", min_value=0.0, value=500.0)
-            density = st.number_input("비중 (Density)", value=7.85, help="철: 7.85, SUS: 7.93")
-        with c2:
-            id = st.number_input("내경 (ID, mm)", min_value=0.0, value=0.0)
-            qty = st.number_input("수량 (EA)", min_value=1, value=1)
-            unit_price = st.number_input("kg당 단가 (원)", min_value=0, value=2500)
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans p-4 md:p-8">
+      {/* Header */}
+      <header className="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold text-slate-800 flex items-center gap-3">
+            <FileText className="text-blue-600 w-8 h-8" />
+            AI 고객 스펙 검토 및 라우팅 지원
+          </h1>
+          <p className="text-slate-500 mt-1">도면, 문서 및 엑셀 기반 기술 검토 통합 플랫폼</p>
+        </div>
+        <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">
+          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+          <span className="text-sm font-medium text-slate-600">AI 모델: {GEMINI_MODEL}</span>
+        </div>
+      </header>
 
-        # 자동 계산 로직
-        if od > 0:
-            volume = (math.pi * (od**2 - id**2) / 4) * h
-            weight_per_ea = (volume * density) / 1000000
-            total_weight = weight_per_ea * qty
-            total_cost = total_weight * unit_price
-            
-            st.markdown(f"### 📊 계산 결과")
-            st.success(f"**개당 중량:** {weight_per_ea:,.1f} kg")
-            st.info(f"**총 중량 ({qty}EA):** {total_weight:,.1f} kg")
-            st.error(f"**💰 총 예상 소재비:** {int(total_cost):,} 원")
-        else:
-            st.warning("치수를 입력하면 계산됩니다.")
+      <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Column: Upload & Calculator */}
+        <div className="lg:col-span-5 space-y-6">
+          {/* Upload Section */}
+          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <Upload className="w-5 h-5 text-blue-500" />
+              1. 문서 업로드 (이미지/PDF/엑셀)
+            </h2>
+            <div className={`relative border-2 border-dashed rounded-xl p-8 transition-colors ${file ? 'border-blue-200 bg-blue-50' : 'border-slate-200 hover:border-blue-400'}`}>
+              <input 
+                type="file" 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
+                onChange={handleFileChange}
+                accept="image/*,application/pdf,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              />
+              <div className="text-center">
+                {file ? (
+                  <div className="space-y-3">
+                    {previewUrl ? (
+                      <img src={previewUrl} alt="Preview" className="max-h-48 mx-auto rounded-lg shadow-sm" />
+                    ) : isExcel(file) ? (
+                      <div className="flex flex-col items-center">
+                        <FileSpreadsheet className="w-16 h-16 mx-auto text-green-600" />
+                        <span className="inline-block mt-2 px-2 py-1 bg-green-100 text-green-700 text-xs font-bold rounded">EXCEL</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center">
+                        <FileText className="w-16 h-16 mx-auto text-blue-400" />
+                        <span className="inline-block mt-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded">PDF/DOC</span>
+                      </div>
+                    )}
+                    <p className="text-sm font-medium text-slate-700 truncate max-w-xs mx-auto">{file.name}</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-blue-100 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+                      <Upload className="text-blue-600" />
+                    </div>
+                    <p className="text-slate-600 font-medium">클릭 또는 드래그하여 파일 업로드</p>
+                    <p className="text-slate-400 text-xs mt-1">이미지, PDF, 엑셀(.xlsx, .xls) 지원</p>
+                  </>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={handleAnalyze}
+              disabled={isLoading || !file}
+              className={`w-full mt-4 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
+                isLoading || !file 
+                ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+                : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-lg shadow-blue-200'
+              }`}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  파일 분석 중...
+                </>
+              ) : (
+                <>
+                  <Settings className="w-5 h-5" />
+                  분석 시작
+                </>
+              )}
+            </button>
+            {error && (
+              <div className="mt-3 p-3 bg-red-50 border border-red-100 text-red-600 rounded-lg text-sm flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                {error}
+              </div>
+            )}
+          </section>
 
-# Right Column (Report)
-with col2:
-    st.header("2️⃣ AI 분석 리포트")
-    
-    if 'report_text' not in st.session_state:
-        st.session_state.report_text = ""
-    
-    if st.button("🚀 문서 분석 시작", use_container_width=True):
-        if not document_file:
-            st.error("⚠️ 문서를 먼저 업로드해주세요.")
-        else:
-            document_blob = {"mime_type": document_file.type, "data": document_file.getvalue()}
-            st.session_state.report_text = generate_markdown_report(document_blob)
-            
-    # 결과 출력 및 다운로드 버튼 생성
-    if st.session_state.report_text:
-        result_text = st.session_state.report_text
-        
-        if result_text.startswith("Error"):
-            st.error(result_text)
-        else:
-            st.markdown(result_text)
-            st.success("분석 완료! 이제 형상 분석 결과를 확인하세요.")
-            
-            st.markdown("---")
-            st.subheader("📝 전체 결과 (Copyable Text)")
-            st.code(result_text, language="markdown")
+          {/* Calculator Section */}
+          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <Calculator className="w-5 h-5 text-indigo-500" />
+              스마트 중량/원가 계산기
+            </h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">외경 (OD, mm)</label>
+                <input 
+                  type="number" 
+                  value={calc.od} 
+                  onChange={(e) => setCalc({...calc, od: parseFloat(e.target.value) || 0})}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">내경 (ID, mm)</label>
+                <input 
+                  type="number" 
+                  value={calc.id} 
+                  onChange={(e) => setCalc({...calc, id: parseFloat(e.target.value) || 0})}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">높이 (H, mm)</label>
+                <input 
+                  type="number" 
+                  value={calc.h} 
+                  onChange={(e) => setCalc({...calc, h: parseFloat(e.target.value) || 0})}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">비중 (Density)</label>
+                <input 
+                  type="number" 
+                  value={calc.density} 
+                  onChange={(e) => setCalc({...calc, density: parseFloat(e.target.value) || 0})}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">수량 (EA)</label>
+                <input 
+                  type="number" 
+                  value={calc.qty} 
+                  onChange={(e) => setCalc({...calc, qty: parseInt(e.target.value) || 1})}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">kg당 단가 (원)</label>
+                <input 
+                  type="number" 
+                  value={calc.unitPrice} 
+                  onChange={(e) => setCalc({...calc, unitPrice: parseInt(e.target.value) || 0})}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+            </div>
+
+            {results && (
+              <div className="mt-6 p-4 rounded-xl bg-slate-900 text-white space-y-3">
+                <div className="flex justify-between items-center border-b border-slate-700 pb-2">
+                  <span className="text-slate-400 text-sm flex items-center gap-2"><Scale className="w-4 h-4" /> 개당 중량</span>
+                  <span className="font-bold text-lg">{results.weightPerEa.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-slate-700 pb-2">
+                  <span className="text-slate-400 text-sm flex items-center gap-2"><Box className="w-4 h-4" /> 총 중량 ({calc.qty}EA)</span>
+                  <span className="font-bold text-lg">{results.totalWeight.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg</span>
+                </div>
+                <div className="flex justify-between items-center text-orange-400">
+                  <span className="text-sm font-semibold uppercase tracking-tighter flex items-center gap-2">💰 총 예상 소재비</span>
+                  <span className="font-black text-xl">{Math.floor(results.totalCost).toLocaleString()} 원</span>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* Right Column: AI Analysis Report */}
+        <div className="lg:col-span-7">
+          <section className="bg-white h-full rounded-2xl shadow-sm border border-slate-200 flex flex-col min-h-[600px]">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-green-500" />
+                2. AI 분석 리포트
+              </h2>
+              {analysisResult && (
+                <button 
+                  onClick={copyToClipboard}
+                  className="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-500 flex items-center gap-1 text-sm"
+                  title="결과 복사"
+                >
+                  <Copy className="w-4 h-4" /> 복사
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 p-6 overflow-y-auto">
+              {isLoading ? (
+                <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4">
+                  <div className="relative">
+                    <Loader2 className="w-12 h-12 animate-spin text-blue-500" />
+                    <Settings className="w-6 h-6 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-blue-200" />
+                  </div>
+                  <div className="text-center">
+                    <p className="font-medium text-slate-600">AI가 파일을 정밀 분석 중입니다...</p>
+                    <p className="text-sm">엑셀 데이터 및 형상 정보를 대조하고 있습니다.</p>
+                  </div>
+                </div>
+              ) : analysisResult ? (
+                <div className="prose prose-slate max-w-none prose-headings:font-bold prose-h2:text-xl prose-h3:text-lg prose-table:border prose-table:rounded-xl prose-th:bg-slate-50 prose-th:p-2 prose-td:p-2 prose-td:border-t">
+                  <div className="whitespace-pre-wrap text-slate-700 leading-relaxed font-mono text-sm bg-slate-50 p-4 rounded-xl border border-slate-100">
+                    {analysisResult}
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-3 border-2 border-dashed border-slate-100 rounded-xl">
+                  <Info className="w-12 h-12" />
+                  <p className="font-medium">파일을 분석하면 결과가 여기에 표시됩니다.</p>
+                </div>
+              )}
+            </div>
+
+            {analysisResult && (
+              <div className="p-4 bg-blue-50 border-t border-blue-100 rounded-b-2xl">
+                <div className="flex items-center gap-2 text-blue-700 text-sm">
+                  <Info className="w-4 h-4" />
+                  <span>추출된 치수 정보를 확인한 후 왼쪽 계산기에 입력하여 정밀 검토를 완료하세요.</span>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
+
+      {/* Footer Info */}
+      <footer className="max-w-7xl mx-auto mt-8 text-center text-slate-400 text-xs">
+        <div className="flex items-center justify-center gap-6 mb-4">
+          <div className="flex items-center gap-1"><Scale className="w-3 h-3" /> 중량 자동화</div>
+          <div className="flex items-center gap-1"><Truck className="w-3 h-3" /> 물류 조건 추출</div>
+          <div className="flex items-center gap-1"><FileSpreadsheet className="w-3 h-3" /> 엑셀 데이터 분석</div>
+        </div>
+        &copy; 2024 (주)태웅 - AI 기반 영업 수주 검토 지원 시스템
+      </footer>
+    </div>
+  );
+}
