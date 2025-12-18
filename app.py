@@ -13,11 +13,17 @@ import {
   Settings,
   Scale,
   FileSpreadsheet,
-  File
+  File,
+  Coins,
+  BarChart3,
+  ClipboardList,
+  Triangle,
+  Ruler,
+  AlertTriangle
 } from 'lucide-react';
 
 // --- API 설정 및 상수 ---
-const API_KEY = ""; // 환경에서 자동 주입됨
+const API_KEY = ""; // 실행 환경에서 자동으로 주입됩니다.
 const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
 const SYSTEM_PROMPT = `당신은 (주)태웅의 글로벌 스펙 기술 검토, 공정, 물류 및 형상 분석 전문가입니다. 
 업로드된 도면/문서/엑셀 파일을 분석하고, 아래 지침에 따라 결과를 출력하십시오.
@@ -29,7 +35,7 @@ const SYSTEM_PROMPT = `당신은 (주)태웅의 글로벌 스펙 기술 검토, 
 
 [검토 및 출력 지침]
 1. 문서 식별: 문서 번호(Doc No.)와 개정 번호(Rev. No.) 필수 추출.
-2. 형상 분석: 제품 형상 추론(예: 플랜지 샤프트, 링 등) 및 기하학적 특징 설명. (엑셀의 경우 데이터 시트의 치수 정보를 기반으로 형상 유추)
+2. 형상 분석: 제품 형상 추론(예: 플랜지 샤프트, 링 등) 및 기하학적 특징 설명. (엑셀의 경우 데이터 시트의 치수 정보를 기반으로 형상 유유)
 3. 규격 대조: 고객 요구 물성치가 국제 표준을 만족하는지 판단.
 4. 치수 추출: 핵심 치수(OD, ID, H) 및 수량 추출.
 5. 물류 및 출하: INCOTERMS, 포장 방식, 방청 요구사항 추출.
@@ -101,7 +107,7 @@ export default function App() {
       if (selectedFile.type.startsWith('image/')) {
         setPreviewUrl(URL.createObjectURL(selectedFile));
       } else {
-        setPreviewUrl(null); // PDF나 Excel은 이미지 미리보기가 불가하므로 아이콘으로 대체
+        setPreviewUrl(null); 
       }
       setError(null);
     }
@@ -333,7 +339,7 @@ export default function App() {
                   <span className="font-bold text-lg">{results.totalWeight.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg</span>
                 </div>
                 <div className="flex justify-between items-center text-orange-400">
-                  <span className="text-sm font-semibold uppercase tracking-tighter flex items-center gap-2">💰 총 예상 소재비</span>
+                  <span className="text-sm font-semibold uppercase tracking-tighter flex items-center gap-2"><Coins className="w-4 h-4" /> 총 예상 소재비</span>
                   <span className="font-black text-xl">{Math.floor(results.totalCost).toLocaleString()} 원</span>
                 </div>
               </div>
@@ -369,7 +375,7 @@ export default function App() {
                   </div>
                   <div className="text-center">
                     <p className="font-medium text-slate-600">AI가 파일을 정밀 분석 중입니다...</p>
-                    <p className="text-sm">엑셀 데이터 및 형상 정보를 대조하고 있습니다.</p>
+                    <p className="text-sm">데이터 및 형상 정보를 대조하고 있습니다.</p>
                   </div>
                 </div>
               ) : analysisResult ? (
@@ -390,7 +396,7 @@ export default function App() {
               <div className="p-4 bg-blue-50 border-t border-blue-100 rounded-b-2xl">
                 <div className="flex items-center gap-2 text-blue-700 text-sm">
                   <Info className="w-4 h-4" />
-                  <span>추출된 치수 정보를 확인한 후 왼쪽 계산기에 입력하여 정밀 검토를 완료하세요.</span>
+                  <span>추출된 정보를 확인한 후 왼쪽 계산기에 입력하여 검토를 완료하세요.</span>
                 </div>
               </div>
             )}
@@ -403,7 +409,7 @@ export default function App() {
         <div className="flex items-center justify-center gap-6 mb-4">
           <div className="flex items-center gap-1"><Scale className="w-3 h-3" /> 중량 자동화</div>
           <div className="flex items-center gap-1"><Truck className="w-3 h-3" /> 물류 조건 추출</div>
-          <div className="flex items-center gap-1"><FileSpreadsheet className="w-3 h-3" /> 엑셀 데이터 분석</div>
+          <div className="flex items-center gap-1"><FileSpreadsheet className="w-3 h-3" /> 데이터 분석</div>
         </div>
         &copy; 2024 (주)태웅 - AI 기반 영업 수주 검토 지원 시스템
       </footer>
